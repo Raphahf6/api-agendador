@@ -1,0 +1,16 @@
+# Ignorar o ambiente virtual
+/backend/venv/
+
+# Ignorar a chave secreta do Google/Firebase
+# ESTA É A LINHA MAIS IMPORTANTE
+/backend/credentials.json
+
+# Ignorar o banco de dados de teste local
+/backend/chatbot.db
+
+# Ignorar caches do Python
+__pycache__/
+*.pyc
+
+# Ignorar caches do VS Code
+.vscode/
