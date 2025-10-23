@@ -5,9 +5,9 @@ from fastapi import APIRouter, HTTPException, Query, status, Depends
 from typing import List, Dict, Any, Optional
 
 # Importações relativas da nossa nova estrutura
-from .. import calendar_service
-from ..core.db import get_hairdresser_data_from_db
-from ..core.models import SalonPublicDetails, Service, Appointment
+import calendar_service
+from core.db import get_hairdresser_data_from_db
+from core.models import SalonPublicDetails, Service, Appointment
 
 # Cria um novo "roteador". Pense nele como um mini-aplicativo FastAPI.
 # Todos os endpoints aqui serão prefixados com /api/v1 (definiremos isso no main.py)

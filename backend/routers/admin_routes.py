@@ -5,9 +5,11 @@ from typing import List
 from firebase_admin import firestore
 
 # Importações relativas da nossa nova estrutura
-from ..core.auth import get_current_user # O nosso "guarda" de segurança
-from ..core.db import get_all_clients_from_db, get_hairdresser_data_from_db
-from ..core.models import ClientDetail, Service, NewClientData
+from core.auth import get_current_user # O nosso "guarda" de segurança
+from core.db import get_all_clients_from_db, get_hairdresser_data_from_db
+from core.models import ClientDetail, Service, NewClientData
+import calendar_service
+
 
 # Obtém a instância do DB (assumindo que já foi inicializada no main.py)
 db = firestore.client()

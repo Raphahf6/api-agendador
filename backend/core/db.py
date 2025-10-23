@@ -5,7 +5,7 @@ from firebase_admin import credentials, firestore
 from typing import List, Dict, Any, Optional # Para type hinting
 
 # Importa os modelos de dados que vamos retornar
-from .models import ClientDetail, Service
+from models import ClientDetail, Service
 
 # Inicializa a conexão com o Firestore
 # Assumimos que o Firebase já foi inicializado no main.py

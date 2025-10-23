@@ -7,7 +7,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 # Importa os nossos novos módulos de rotas
-from .routers import public_routes, admin_routes
+from routers import public_routes, admin_routes
+import calendar_service
 
 # Configuração do logging
 logging.basicConfig(level=logging.INFO)

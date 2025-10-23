@@ -1,6 +1,7 @@
 # backend/core/models.py
 from pydantic import BaseModel, Field
 from typing import List, Optional # Usar 'List' e 'Optional' é uma boa prática
+import calendar_service
 
 # --- Modelos Pydantic ---
 
