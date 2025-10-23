@@ -16,7 +16,7 @@ import BusinessIcon from '@mui/icons-material/Business';
 import ScheduleIcon from '@mui/icons-material/Schedule';
 import DesignServicesIcon from '@mui/icons-material/DesignServices';
 
-const API_BASE_URL = "http://localhost:8000";
+const API_BASE_URL = "https://api-agendador.onrender.com/api/v1";
 const weekDays = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
 const weekDaysPT = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'];
 

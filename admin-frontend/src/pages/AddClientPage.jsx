@@ -9,7 +9,7 @@ import {
 } from '@mui/material';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack'; // Ícone para voltar
 
-const API_BASE_URL = "http://localhost:8000";
+const API_BASE_URL = "https://api-agendador.onrender.com/api/v1";
 
 const weekDays = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
 const weekDaysPT = ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado', 'Domingo'];

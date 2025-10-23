@@ -22,7 +22,7 @@ import AddIcon from '@mui/icons-material/Add'
 import EditIcon from '@mui/icons-material/Edit';
 
 // A URL da sua API backend
-const API_BASE_URL = "http://localhost:8000";
+const API_BASE_URL = "https://api-agendador.onrender.com/api/v1";
 
 function ClientListPage() {
   const [clients, setClients] = useState([]);
