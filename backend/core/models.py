@@ -1,16 +1,15 @@
 # backend/core/models.py
 from pydantic import BaseModel, Field
-from typing import List, Optional # Usar 'List' e 'Optional' é uma boa prática
-import calendar_service
+from typing import List, Optional # Usar List e Optional é uma boa prática em vez de |
 
-# --- Modelos Pydantic ---
+# --- Modelos Pydantic (Movidos do main.py) ---
 
 class Service(BaseModel):
-    id: Optional[str] = None # str | None
+    id: Optional[str] = None
     nome_servico: str
     duracao_minutos: int
-    preco: Optional[float] = None # float | None
-    descricao: Optional[str] = None # str | None
+    preco: Optional[float] = None
+    descricao: Optional[str] = None
 
 class SalonPublicDetails(BaseModel):
     nome_salao: str
@@ -20,7 +19,7 @@ class SalonPublicDetails(BaseModel):
     cor_secundaria: str = "#EC4899"
     cor_gradiente_inicio: str = "#A78BFA"
     cor_gradiente_fim: str = "#F472B6"
-    servicos: List[Service] = [] # list[Service]
+    servicos: List[Service] = []
 
 class ClientDetail(BaseModel): # Admin
     id: str
@@ -51,9 +50,10 @@ class NewClientData(BaseModel): # Admin
     cor_gradiente_inicio: Optional[str] = None
     cor_gradiente_fim: Optional[str] = None
 
-class Appointment(BaseModel): # Cliente Final
+class Appointment(BaseModel): # Cliente Final (Payload para POST /agendamentos)
     salao_id: str
     service_id: str
     start_time: str # Formato ISO
     customer_name: str = Field(..., min_length=2)
     customer_phone: str = Field(..., pattern=r"^(?:\+55)?(\d{2})?\d{8,9}$")
+
