@@ -3,6 +3,7 @@ import logging
 import firebase_admin
 from firebase_admin import credentials, firestore
 from typing import List, Dict, Any, Optional # Para type hinting
+import calendar_service
 
 # Importa os modelos de dados que vamos retornar
 from models import ClientDetail, Service
