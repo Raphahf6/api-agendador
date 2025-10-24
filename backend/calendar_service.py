@@ -1,157 +1,155 @@
-# backend/calendar_service.py (Versão Completa com Dados do Cliente na Descrição)
+# backend/calendar_service.py (Versão FINAL - Lendo do FIRESTORE)
 import datetime
 import logging
 import pytz # Para fusos horários
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
-from tenacity import retry, stop_after_attempt, wait_fixed # Para retentativas
+from firebase_admin import firestore # Importa o firestore
+from typing import List, Dict, Any
+
+# Importa a instância 'db' do nosso módulo core.db
+from core.db import db 
 
 logging.basicConfig(level=logging.INFO)
 
 # --- Configurações ---
-SERVICE_ACCOUNT_FILE = 'credentials.json'
-SCOPES = ['https://www.googleapis.com/auth/calendar']
-# Defina o fuso horário local corretamente (essencial!)
+# (Não precisamos mais do SERVICE_ACCOUNT_FILE ou SCOPES do Google Calendar aqui)
 LOCAL_TIMEZONE = 'America/Sao_Paulo'
-# Mapeamento de dias da semana (Python 0=Segunda) para nomes no DB
 WEEKDAY_MAP_DB = {
     0: 'monday', 1: 'tuesday', 2: 'wednesday', 3: 'thursday',
     4: 'friday', 5: 'saturday', 6: 'sunday'
 }
-# Intervalo em minutos para gerar os slots disponíveis
 SLOT_INTERVAL_MINUTES = 15
 
-# --- Autenticação ---
-try:
-    creds = service_account.Credentials.from_service_account_file(
-            SERVICE_ACCOUNT_FILE, scopes=SCOPES)
-    service = build('calendar', 'v3', credentials=creds)
-    logging.info("Conexão com Google Calendar API estabelecida.")
-except Exception as e:
-    logging.error(f"Falha CRÍTICA ao conectar com Google Calendar API: {e}")
-    service = None
+# --- REMOVIDA a autenticação do Google Calendar ---
+# creds = ...
+# service = ...
 
-# --- Funções com Proteção de Rede ---
-
-# Função find_available_slots (Mantida como a última versão funcional)
-@retry(wait=wait_fixed(2), stop=stop_after_attempt(3))
-def find_available_slots(calendar_id: str, service_duration_minutes: int, work_days: list, start_hour_str: str, end_hour_str: str, date_str: str):
-    """Encontra horários disponíveis APENAS para o dia especificado (date_str)."""
-    if not service: return []
-    available_slots = []
+# --- Função find_available_slots (REESCRITA para FIRESTORE) ---
+def find_available_slots(
+    # calendar_id não é mais necessário, mas o salao_id é (para a query)
+    # Vamos assumir que o main.py passará o salao_id
+    salao_id: str, 
+    service_duration_minutes: int, 
+    work_days: list, 
+    start_hour_str: str, 
+    end_hour_str: str, 
+    date_str: str
+) -> List[str]:
+    """
+    Encontra horários disponíveis lendo os agendamentos do FIRESTORE
+    para um dia específico.
+    """
+    available_slots_iso = []
     try:
         local_tz = pytz.timezone(LOCAL_TIMEZONE)
-        target_date_local = datetime.datetime.strptime(date_str, '%Y-%m-%d').date()
-        day_of_week_name = WEEKDAY_MAP_DB.get(target_date_local.weekday())
-        if not day_of_week_name or day_of_week_name not in work_days:
-            logging.info(f"Dia de folga ou inválido ({date_str}, {day_of_week_name}).")
+        
+        # 1. Validar e Definir Dia Alvo
+        try:
+            target_date_local = datetime.datetime.strptime(date_str, '%Y-%m-%d').date()
+        except ValueError:
+            logging.error(f"Formato de data inválido recebido: {date_str}")
             return []
 
-        start_work_time = datetime.datetime.strptime(start_hour_str, '%H:%M').time()
-        end_work_time = datetime.datetime.strptime(end_hour_str, '%H:%M').time()
+        # 2. Verificar Dia de Folga
+        day_of_week_name = WEEKDAY_MAP_DB.get(target_date_local.weekday())
+        if not day_of_week_name or day_of_week_name not in work_days:
+            logging.info(f"Dia de folga detectado para {date_str}.")
+            return []
+
+        # 3. Validar e Definir Período de Trabalho (com Timezone!)
+        try:
+            start_work_time = datetime.datetime.strptime(start_hour_str, '%H:%M').time()
+            end_work_time = datetime.datetime.strptime(end_hour_str, '%H:%M').time()
+        except ValueError:
+             logging.error(f"Formato de hora inválido: Início '{start_hour_str}', Fim '{end_hour_str}'")
+             return []
+
         day_start_dt = local_tz.localize(datetime.datetime.combine(target_date_local, start_work_time))
         day_end_dt = local_tz.localize(datetime.datetime.combine(target_date_local, end_work_time))
 
+        # 4. Definir Ponto de Partida da Busca (Considerando Dia Atual)
         now_local = datetime.datetime.now(local_tz)
         current_minute = now_local.minute
         minutes_to_next_interval = SLOT_INTERVAL_MINUTES - (current_minute % SLOT_INTERVAL_MINUTES)
         start_search_today = now_local.replace(second=0, microsecond=0) + datetime.timedelta(minutes=minutes_to_next_interval)
+        
         search_from = max(start_search_today, day_start_dt) if target_date_local == now_local.date() else day_start_dt
 
-        if search_from >= day_end_dt: return []
+        if search_from >= day_end_dt:
+             logging.info(f"Horário de busca ({search_from}) é após o fim do expediente.")
+             return []
 
-        logging.info(f"Buscando eventos em '{calendar_id}' de {day_start_dt.isoformat()} a {day_end_dt.isoformat()}")
-        events_result = service.events().list(
-            calendarId=calendar_id, timeMin=day_start_dt.isoformat(), timeMax=day_end_dt.isoformat(),
-            singleEvents=True, orderBy='startTime'
-        ).execute()
-        busy_periods = events_result.get('items', [])
-        logging.info(f"Encontrados {len(busy_periods)} eventos.")
+        # --- NOVA LÓGICA: BUSCAR AGENDAMENTOS NO FIRESTORE ---
+        
+        # 5. Buscar Agendamentos Existentes no Firestore para aquele dia
+        logging.info(f"Buscando agendamentos no Firestore para '{salao_id}' em {date_str}")
+        
+        # Define o início e o fim do dia em UTC para a query (Firestore armazena em UTC)
+        day_start_utc = day_start_dt.astimezone(pytz.utc)
+        day_end_utc = day_end_dt.astimezone(pytz.utc)
 
-        last_event_end = search_from
-        for event in busy_periods:
-            if 'dateTime' not in event['start'] or 'dateTime' not in event['end']: continue
-            event_start = datetime.datetime.fromisoformat(event['start']['dateTime']).astimezone(local_tz)
-            potential_slot = last_event_end
-            while potential_slot + datetime.timedelta(minutes=service_duration_minutes) <= event_start:
-                if potential_slot >= day_start_dt and potential_slot < day_end_dt:
-                    available_slots.append(potential_slot.isoformat())
+        agendamentos_ref = db.collection('cabeleireiros').document(salao_id).collection('agendamentos')
+        
+        # Query: busca agendamentos que começam (startTime) no dia alvo
+        query = agendamentos_ref.where("startTime", ">=", day_start_utc).where("startTime", "<", day_end_utc)
+        busy_periods_docs = query.stream()
+        
+        # Converte os documentos do Firestore para um formato utilizável (com timezones locais)
+        busy_periods = []
+        for doc in busy_periods_docs:
+            data = doc.to_dict()
+            # Converte os Timestamps do Firestore (que são UTC) de volta para o fuso horário local
+            busy_periods.append({
+                "start": data['startTime'].astimezone(local_tz),
+                "end": data['endTime'].astimezone(local_tz)
+            })
+        
+        logging.info(f"Encontrados {len(busy_periods)} agendamentos no Firestore.")
+        # --- FIM DA NOVA LÓGICA ---
+
+
+        # 6. Calcular Vãos Disponíveis (Iterando pelos Slots Possíveis)
+        # (Esta lógica permanece a mesma de antes, mas agora usa os 'busy_periods' do Firestore)
+        potential_slot = search_from 
+
+        while potential_slot < day_end_dt:
+            slot_end = potential_slot + datetime.timedelta(minutes=service_duration_minutes)
+
+            if slot_end > day_end_dt:
+                break 
+
+            is_free = True
+            for event in busy_periods:
+                event_start = event['start']
+                event_end = event['end']
+
+                # Verifica sobreposição
+                if potential_slot < event_end and slot_end > event_start:
+                    is_free = False
+                    # Avança o próximo potencial slot para DEPOIS do fim deste evento
+                    potential_slot = event_end
+                    # Arredonda para o próximo intervalo
+                    minute_offset = potential_slot.minute % SLOT_INTERVAL_MINUTES
+                    if minute_offset != 0:
+                        potential_slot += datetime.timedelta(minutes=SLOT_INTERVAL_MINUTES - minute_offset)
+                    break # Sai do loop interno (eventos)
+
+            if is_free:
+                available_slots_iso.append(potential_slot.isoformat())
                 potential_slot += datetime.timedelta(minutes=SLOT_INTERVAL_MINUTES)
-            last_event_end = max(last_event_end, datetime.datetime.fromisoformat(event['end']['dateTime']).astimezone(local_tz))
-
-        potential_slot = last_event_end
-        while potential_slot + datetime.timedelta(minutes=service_duration_minutes) <= day_end_dt:
-            if potential_slot >= day_start_dt:
-                available_slots.append(potential_slot.isoformat())
-            potential_slot += datetime.timedelta(minutes=SLOT_INTERVAL_MINUTES)
-
-        final_slots = sorted(list(set(available_slots)))
-        logging.info(f"Retornando {len(final_slots)} horários para {date_str}.")
+            
+        final_slots = sorted(list(set(available_slots_iso)))
+        logging.info(f"Retornando {len(final_slots)} horários (Firestore) para {date_str}.")
         return final_slots
 
-    except HttpError as e:
-        if e.resp.status == 403: logging.error(f"ERRO DE PERMISSÃO (403) para Calendar ID: '{calendar_id}'. Verifique compartilhamento.")
-        else: logging.error(f"Erro de rede (Calendar API): {e}")
-        raise
-    except ValueError as ve:
-        logging.error(f"Erro de formato data/hora: {ve}")
-        return []
     except Exception as e:
-        logging.exception(f"Erro inesperado no cálculo de slots:")
-        return []
+        logging.exception(f"Erro inesperado no cálculo de slots (Firestore):") # Loga traceback
+        return [] # Retorna vazio em caso de erro
 
 
-# Função create_event ATUALIZADA
-@retry(wait=wait_fixed(2), stop=stop_after_attempt(3))
-def create_event(
-    calendar_id: str,
-    service_name: str,
-    start_time_str: str,
-    duration_minutes: int,
-    # --- NOVOS PARÂMETROS ---
-    customer_name: str | None = None,
-    customer_phone: str | None = None
-):
-    """Cria um evento na agenda, incluindo dados do cliente e com retentativas."""
-    if not service:
-        logging.error("Google Calendar API não inicializada. Impossível criar evento.")
-        return False
-        
-    try:
-        local_tz = pytz.timezone(LOCAL_TIMEZONE)
-        
-        try:
-             start_time = datetime.datetime.fromisoformat(start_time_str).astimezone(local_tz)
-        except ValueError:
-             logging.error(f"Formato de start_time inválido recebido: {start_time_str}")
-             return False
-             
-        end_time = start_time + datetime.timedelta(minutes=duration_minutes)
+# --- Função create_event (REMOVIDA) ---
+# Esta função não é mais necessária aqui, pois o agendamento
+# é agora tratado diretamente no public_routes.py
+# (A menos que queiramos manter a sincronização com o Google como "Fase 2")
 
-        # --- DESCRIÇÃO ATUALIZADA ---
-        description = f"Agendado pela plataforma.\n" # Mantém a linha original
-        if customer_name and customer_name != "Cliente": # Adiciona nome se existir e não for o fallback
-            description += f"Cliente: {customer_name}\n"
-        if customer_phone and customer_phone != "Não informado": # Adiciona telefone se existir e não for o fallback
-            description += f"Telefone: {customer_phone}"
-        # --- FIM DA ATUALIZAÇÃO ---
-
-        event = {
-            'summary': service_name,
-            'description': description.strip(), # Usa a nova descrição, removendo espaços extras
-            'start': {'dateTime': start_time.isoformat(), 'timeZone': LOCAL_TIMEZONE},
-            'end': {'dateTime': end_time.isoformat(), 'timeZone': LOCAL_TIMEZONE},
-        }
-        
-        logging.info(f"Criando evento em '{calendar_id}': {service_name} @ {start_time.isoformat()}")
-        created_event = service.events().insert(calendarId=calendar_id, body=event).execute()
-        logging.info(f"Evento criado com sucesso: {created_event.get('htmlLink')}")
-        return True
-        
-    except HttpError as e:
-        logging.error(f"Erro de rede na API do Calendar ao criar evento (tentativa em andamento): {e}")
-        raise # Levanta para ser tratado no main.py
-    except Exception as e:
-        logging.exception(f"Erro inesperado ao criar evento:")
-        return False # Retorna falha para o main.py
+# def create_event(...):
+#     ...

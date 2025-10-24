@@ -5,6 +5,9 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field # Adicionado Field para validação
+from dotenv import load_dotenv
+load_dotenv()  # Carrega variáveis de ambiente do .env
 
 # Importa os nossos novos módulos de rotas
 from routers import public_routes, admin_routes

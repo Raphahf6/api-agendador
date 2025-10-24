@@ -3,6 +3,7 @@ import logging
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from firebase_admin import auth
+import calendar_service
 
 # Define o esquema de autenticação.
 # "tokenUrl" é um parâmetro necessário para a documentação Swagger/FastAPI,

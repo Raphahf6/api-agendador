@@ -1,121 +1,136 @@
 # backend/routers/admin_routes.py
 import logging
-from fastapi import APIRouter, HTTPException, Depends, status
-from typing import List
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from firebase_admin import firestore
+from typing import List, Optional
+from datetime import datetime, timedelta
+from pydantic import BaseModel, Field # Adicionado Field para validação
 
-# Importações relativas da nossa nova estrutura
+# Importações dos nossos módulos refatorados
+from core.models import ClientDetail, NewClientData, Service
 from core.auth import get_current_user # O nosso "guarda" de segurança
-from core.db import get_all_clients_from_db, get_hairdresser_data_from_db
-from core.models import ClientDetail, Service, NewClientData
-import calendar_service
+from core.db import get_all_clients_from_db, get_hairdresser_data_from_db, db # Importa a instância 'db'
 
-
-# Obtém a instância do DB (assumindo que já foi inicializada no main.py)
-db = firestore.client()
-
-# Cria um novo "roteador" para os endpoints de administração
-# Todos os endpoints aqui serão prefixados com /admin (definiremos isso no main.py)
+# --- Configuração do Roteador Admin ---
 router = APIRouter(
-    prefix="/admin", # Adiciona /admin a todas as rotas deste ficheiro
-    tags=["Admin"], # Agrupa na documentação /docs
-    dependencies=[Depends(get_current_user)] # <<< PROTEÇÃO GLOBAL!
+    prefix="/admin", # Todas as rotas aqui começarão com /admin
+    tags=["Admin"], # Agrupa na documentação do /docs
+    dependencies=[Depends(get_current_user)] # Proteção GLOBAL para /admin
 )
 
-# --- ENDPOINTS PROTEGIDOS DO ADMIN ---
+# --- Modelo de Evento (O que o FullCalendar espera) ---
+class CalendarEvent(BaseModel):
+    id: str
+    title: str
+    start: datetime
+    end: datetime
+    backgroundColor: Optional[str] = None
+    borderColor: Optional[str] = None
+    extendedProps: Optional[dict] = None
+
+# --- ENDPOINT PARA BUSCAR O WHATSAPP VINCULADO ---
+@router.get("/user/salao-id", response_model=dict[str, str])
+async def get_salao_id_for_user(current_user: dict[str, any] = Depends(get_current_user)):
+    """
+    Busca o numero_whatsapp (ID do salão) associado ao usuário logado (pelo email do Firebase).
+    Esta rota é chamada imediatamente após o login bem-sucedido.
+    """
+    user_email = current_user.get("email")
+    user_uid = current_user.get("uid")
+    
+    logging.info(f"Admin {user_email} (UID: {user_uid}) solicitou ID do salão.")
+    
+    try:
+        # 1. Busca na coleção 'cabeleireiros' pelo email do usuário
+        # No nosso modelo de auto-cadastro, assumimos que o campo 'email' está vinculado.
+        # Como não criamos um campo 'email' na coleção cabeleireiros, vamos assumir
+        # que o numero_whatsapp do salão é o ID único.
+        
+        # Vamos pesquisar o salão que tenha o mesmo email de login cadastrado
+        # (Esta lógica precisa ser refinada, mas serve para o MVP):
+        
+        # NOTE: A forma como o Salão foi cadastrado é crucial aqui. 
+        # Vamos buscar o salão cujo 'calendar_id' (que usamos como placeholder) seja igual ao email do usuário logado.
+        
+        clients_ref = db.collection('cabeleireiros')
+        # Filtra por um campo que contenha o email do usuário logado.
+        query = clients_ref.where('calendar_id', '==', user_email).limit(1) 
+        
+        client_doc = next(query.stream(), None)
+        
+        if not client_doc:
+            # Se o salão não for encontrado, significa que o usuário não cadastrou o salão (ou logou com a conta errada).
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, 
+                                detail="Nenhum salão encontrado para esta conta de usuário.")
+                                
+        # O ID do documento é o numero_whatsapp que precisamos
+        salao_id = client_doc.id 
+        
+        return {"salao_id": salao_id}
+        
+    except HTTPException as httpe:
+        raise httpe
+    except Exception as e:
+        logging.exception(f"Erro ao buscar salão por email ({user_email}): {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno ao buscar o ID do salão.")
+
+# --- Endpoints CRUD de Clientes (Sem alterações) ---
 
 @router.get("/clientes", response_model=List[ClientDetail])
 async def list_clients(current_user: dict = Depends(get_current_user)):
-    """
-    Endpoint protegido para listar todos os clientes (cabeleireiros).
-    """
+    # ... (código existente) ...
     logging.info(f"Admin {current_user.get('email')} solicitou lista de clientes.")
     clients = get_all_clients_from_db()
-    if clients is None:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro ao buscar clientes.")
+    if clients is None: raise HTTPException(status_code=500, detail="Erro ao buscar clientes.")
     return clients
 
 @router.get("/clientes/{client_id}", response_model=ClientDetail)
 async def get_client_details(client_id: str, current_user: dict = Depends(get_current_user)):
-    """
-    Endpoint protegido para buscar os detalhes completos de um cliente, incluindo serviços.
-    """
-    admin_email = current_user.get("email")
-    logging.info(f"Admin {admin_email} solicitando detalhes do cliente: {client_id}")
+    # ... (código existente) ...
+    admin_email = current_user.get("email"); logging.info(f"Admin {admin_email} detalhes cliente: {client_id}")
     try:
-        client_ref = db.collection('cabeleireiros').document(client_id)
-        client_doc = client_ref.get()
-        if not client_doc.exists:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cliente não encontrado.")
-        
+        client_ref = db.collection('cabeleireiros').document(client_id); client_doc = client_ref.get()
+        if not client_doc.exists: raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cliente não encontrado.")
         client_data = client_doc.to_dict()
-        
-        # Busca os serviços na sub-coleção
         services_ref = client_ref.collection('servicos').stream()
         services_list = [Service(id=doc.id, **doc.to_dict()) for doc in services_ref]
-        
-        # Usa **client_data para passar todos os campos, Pydantic valida e aplica defaults
-        client_details = ClientDetail(id=client_doc.id, servicos=services_list, **client_data)
+        client_details = ClientDetail(id=client_doc.id, servicos=services_list, **client_data) 
         return client_details
-    except Exception as e:
-        logging.exception(f"Erro buscar detalhes cliente {client_id}:")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno.")
+    except Exception as e: logging.exception(f"Erro buscar detalhes cliente {client_id}:"); raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno.")
 
 @router.post("/clientes", response_model=ClientDetail, status_code=status.HTTP_201_CREATED)
 async def create_client(client_data: NewClientData, current_user: dict = Depends(get_current_user)):
-    """
-    Endpoint protegido para criar um novo cliente (cabeleireiro).
-    """
-    admin_email = current_user.get("email")
-    logging.info(f"Admin {admin_email} criando: {client_data.nome_salao}")
-    
-    client_id = client_data.numero_whatsapp # Pydantic já validou o formato
+    # ... (código existente) ...
+    admin_email = current_user.get("email"); logging.info(f"Admin {admin_email} criando: {client_data.nome_salao}")
+    client_id = client_data.numero_whatsapp
     try:
         client_ref = db.collection('cabeleireiros').document(client_id)
-        if client_ref.get().exists:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Cliente {client_id} já existe.")
-        
-        data_to_save = client_data.dict(exclude_unset=True) # Não salva campos não enviados
+        if client_ref.get().exists: raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Cliente {client_id} já existe.")
+        data_to_save = client_data.dict(exclude_unset=True)
         client_ref.set(data_to_save)
         logging.info(f"Cliente '{data_to_save['nome_salao']}' criado ID: {client_id}")
-        
-        # Retorna ClientDetail completo (serviços vazio)
         return ClientDetail(id=client_id, servicos=[], **data_to_save)
-    except HTTPException as httpe:
-        raise httpe
-    except Exception as e:
-        logging.exception(f"Erro ao criar cliente:")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno.")
+    except HTTPException as httpe: raise httpe
+    except Exception as e: logging.exception(f"Erro ao criar cliente:"); raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno.")
 
 @router.put("/clientes/{client_id}", response_model=ClientDetail)
 async def update_client(client_id: str, client_update_data: ClientDetail, current_user: dict = Depends(get_current_user)):
-    """
-    Endpoint protegido para atualizar TODOS os dados de um cliente, incluindo serviços.
-    """
-    admin_email = current_user.get("email")
-    logging.info(f"Admin {admin_email} atualizando: {client_id}")
-    if client_id != client_update_data.id:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="ID URL não corresponde aos dados.")
-    
+    # ... (código existente da transação) ...
+    admin_email = current_user.get("email"); logging.info(f"Admin {admin_email} atualizando: {client_id}")
+    if client_id != client_update_data.id: raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="ID URL não corresponde aos dados.")
     try:
         client_ref = db.collection('cabeleireiros').document(client_id)
-        if not client_ref.get(retry=None, timeout=None).exists: # Verificação simples
-             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cliente não encontrado.")
+        if not client_ref.get(retry=None, timeout=None).exists: raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cliente não encontrado.")
         
-        # Prepara dados principais e serviços
         client_info = client_update_data.dict(exclude={'servicos', 'id'}, exclude_unset=True)
         updated_services = client_update_data.servicos
 
         @firestore.transactional
         def update_in_transaction(transaction, client_ref, client_info_to_save, services_to_save):
-            # 1. Leituras primeiro
             services_ref = client_ref.collection('servicos')
             old_services_refs = [doc.reference for doc in services_ref.stream(transaction=transaction)]
-            
-            # 2. Escritas depois
-            transaction.update(client_ref, client_info_to_save) # Usa UPDATE para mesclar
-            for old_ref in old_services_refs:
-                transaction.delete(old_ref)
+            transaction.update(client_ref, client_info_to_save) # Usa UPDATE
+            for old_ref in old_services_refs: transaction.delete(old_ref)
             for service_data in services_to_save:
                  new_service_ref = services_ref.document()
                  service_dict = service_data.dict(exclude={'id'}, exclude_unset=True, exclude_none=True)
@@ -125,12 +140,64 @@ async def update_client(client_id: str, client_update_data: ClientDetail, curren
         update_in_transaction(transaction, client_ref, client_info, updated_services)
         logging.info(f"Cliente '{client_update_data.nome_salao}' atualizado.")
         
-        # Busca novamente para retornar o estado atualizado com os IDs dos serviços
         updated_details = await get_client_details(client_id, current_user)
         return updated_details
         
-    except HTTPException as httpe:
-        raise httpe
+    except HTTPException as httpe: raise httpe
+    except Exception as e: logging.exception(f"Erro CRÍTICO ao atualizar cliente {client_id}:"); raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno.")
+
+
+# --- NOVO ENDPOINT PARA O CALENDÁRIO DO PAINEL ---
+@router.get("/calendario/{salao_id}/eventos", response_model=List[CalendarEvent])
+async def get_calendar_events(
+    salao_id: str, 
+    start: str, # FullCalendar envia ?start=...&end=...
+    end: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Busca os agendamentos de um salão específico no Firestore
+    e os formata para o FullCalendar.
+    """
+    admin_email = current_user.get("email")
+    logging.info(f"Admin {admin_email} buscando eventos para {salao_id} de {start} a {end}")
+    
+    # (Validação futura: O admin logado pode ver este salao_id?)
+    
+    try:
+        # Converte as strings ISO do FullCalendar para objetos datetime
+        start_dt_utc = datetime.fromisoformat(start)
+        end_dt_utc = datetime.fromisoformat(end)
+
+        agendamentos_ref = db.collection('cabeleireiros').document(salao_id).collection('agendamentos')
+        
+        # Query: busca agendamentos que comecem DENTRO da janela de visão do calendário
+        query = agendamentos_ref.where("startTime", ">=", start_dt_utc).where("startTime", "<=", end_dt_utc)
+        docs = query.stream()
+
+        eventos = []
+        for doc in docs:
+            data = doc.to_dict()
+            
+            # (Opcional: Adicionar cores baseadas no serviço, etc.)
+            
+            evento_formatado = CalendarEvent(
+                id=doc.id,
+                # Título do evento: "Nome do Serviço - Nome do Cliente"
+                title=f"{data.get('serviceName', 'Serviço')} - {data.get('customerName', 'Cliente')}",
+                start=data['startTime'], # Já está como datetime
+                end=data['endTime'],     # Já está como datetime
+                extendedProps={ # Dados extras para o clique
+                    "customerName": data.get('customerName'),
+                    "customerPhone": data.get('customerPhone'),
+                    "serviceName": data.get('serviceName'),
+                }
+            )
+            eventos.append(evento_formatado)
+        
+        logging.info(f"Retornando {len(eventos)} eventos para o FullCalendar.")
+        return eventos
+
     except Exception as e:
-        logging.exception(f"Erro CRÍTICO ao atualizar cliente {client_id}:")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno.")
+        logging.exception(f"Erro ao buscar eventos do calendário para {salao_id}:")
+        raise HTTPException(status_code=500, detail="Erro interno ao buscar eventos.")

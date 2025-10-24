@@ -9,8 +9,6 @@ import os
 from .models import ClientDetail, Service 
 # --- Fim da Correção ---
 
-# --- Inicialização do DB Movida para cá ---
-# Esta é agora a fonte "oficial" da conexão com o banco de dados
 try:
     if not firebase_admin._apps:
         # Tenta encontrar a credencial
