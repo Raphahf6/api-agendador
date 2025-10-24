@@ -139,6 +139,7 @@ async def create_appointment(appointment: Appointment):
                 salon_name=salon_name,
                 customer_name=user_name,
                 service_name=service_name,
+                client_phone=user_phone,
                 start_time_iso=start_time_str,
             )
             if email_success:

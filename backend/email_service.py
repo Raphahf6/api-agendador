@@ -17,7 +17,7 @@ def send_confirmation_email_to_salon(
     salon_email: str, 
     salon_name: str, 
     customer_name: str, 
-    customer_phone: str,
+    client_phone: str,
     service_name: str, 
     start_time_iso: str
 ) -> bool:
@@ -64,7 +64,7 @@ def send_confirmation_email_to_salon(
             <div class="detail">
                 <strong>Serviço:</strong> {service_name}<br>
                 <strong>Cliente:</strong> {customer_name}<br>
-                <strong>Telefone:</strong> {customer_phone}<br>
+                <strong>Telefone:</strong> {client_phone}<br>
                 <strong>Data e Hora:</strong> {formatted_time}<br>
                 
             </div>
