@@ -1,18 +1,22 @@
 # backend/routers/admin_routes.py
+# backend/routers/admin_routes.py
 import logging
+import os
+import re
 from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi.responses import RedirectResponse # MANTIDO para o /callback
 from firebase_admin import firestore
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
-from pydantic import BaseModel, Field # Adicionado Field para validação
+from pydantic import BaseModel, Field 
+# --- NOVOS IMPORTS PARA GOOGLE OAUTH ---
+from google_auth_oauthlib.flow import Flow
+# --- FIM DOS NOVOS IMPORTS ---
 
 # Importações dos nossos módulos refatorados
 from core.models import ClientDetail, NewClientData, Service
-from core.auth import get_current_user # O nosso "guarda" de segurança
-from core.db import get_all_clients_from_db, get_hairdresser_data_from_db, db # Importa a instância 'db'
-from fastapi.responses import RedirectResponse
-from google_auth_oauthlib.flow import Flow
-import os
+from core.auth import get_current_user 
+from core.db import get_all_clients_from_db, get_hairdresser_data_from_db, db
 # --- Configuração do Roteador Admin ---
 router = APIRouter(
     prefix="/admin", # Todas as rotas aqui começarão com /admin
@@ -42,7 +46,7 @@ class CalendarEvent(BaseModel):
     end: datetime
     backgroundColor: Optional[str] = None
     borderColor: Optional[str] = None
-    extendedProps: Optional[dict] = None
+    extendedProps: Optional[Dict] = None
     
 class ManualAppointmentData(BaseModel):
     salao_id: str
@@ -54,10 +58,9 @@ class ManualAppointmentData(BaseModel):
     # Não precisamos de service_id, pois é um agendamento manual
     
     
-# --- NOVOS ENDPOINTS OAUTH ---
-# (Estes endpoints usam a autenticação de token do Horalis)
-@router.get("/google/auth/start", response_model=dict[str, str]) # Define o modelo de resposta
-async def google_auth_start(current_user: dict[str, any] = Depends(get_current_user)):
+# --- CORREÇÃO AQUI: MUDAR DE RedirectResponse PARA JSON ---
+@router.get("/admin/google/auth/start", response_model=Dict[str, str]) # Define o modelo de resposta
+async def google_auth_start(current_user: Dict[str, Any] = Depends(get_current_user)):
     """
     PASSO 1: Inicia o fluxo OAuth2.
     Retorna a URL de autorização do Google para o frontend.
@@ -67,11 +70,12 @@ async def google_auth_start(current_user: dict[str, any] = Depends(get_current_u
         raise HTTPException(status_code=500, detail="Integração com Google não configurada.")
         
     flow = Flow.from_client_secrets_file(
-        None, 
+        None, # Não estamos a usar um ficheiro, vamos usar os secrets
         scopes=SCOPES,
         redirect_uri=REDIRECT_URI
     )
     
+    # Substitui os segredos pelos valores do ambiente
     flow.client_config['client_id'] = GOOGLE_CLIENT_ID
     flow.client_config['client_secret'] = GOOGLE_CLIENT_SECRET
     
@@ -85,6 +89,7 @@ async def google_auth_start(current_user: dict[str, any] = Depends(get_current_u
     
     # EM VEZ DE REDIRECIONAR, RETORNA O JSON
     return {"authorization_url": authorization_url}
+# --- FIM DA CORREÇÃO ---
 
 @router.get("/google/auth/callback")
 async def google_auth_callback(
@@ -103,8 +108,8 @@ async def google_auth_callback(
 
 # --- FIM DOS NOVOS ENDPOINTS ---
 
-@router.get("/user/salao-id", response_model=dict[str, str])
-async def get_salao_id_for_user(current_user: dict[str, any] = Depends(get_current_user)):
+@router.get("/user/salao-id", response_model=Dict[str, str])
+async def get_salao_id_for_user(current_user: Dict[str, Any] = Depends(get_current_user)):
     """Busca o numero_whatsapp (ID do salão) associado ao usuário logado (pelo UID)."""
     user_uid = current_user.get("uid")
     logging.info(f"Admin (UID: {user_uid}) solicitou ID do salão.")
@@ -131,7 +136,7 @@ async def get_salao_id_for_user(current_user: dict[str, any] = Depends(get_curre
 # --- Endpoints CRUD de Clientes (Sem alterações) ---
 
 @router.get("/clientes", response_model=List[ClientDetail])
-async def list_clients(current_user: dict = Depends(get_current_user)):
+async def list_clients(current_user: Dict = Depends(get_current_user)):
     # ... (código existente) ...
     logging.info(f"Admin {current_user.get('email')} solicitou lista de clientes.")
     clients = get_all_clients_from_db()
@@ -139,21 +144,21 @@ async def list_clients(current_user: dict = Depends(get_current_user)):
     return clients
 
 @router.get("/clientes/{client_id}", response_model=ClientDetail)
-async def get_client_details(client_id: str, current_user: dict = Depends(get_current_user)):
+async def get_client_details(client_id: str, current_user: Dict = Depends(get_current_user)):
     # ... (código existente) ...
     admin_email = current_user.get("email"); logging.info(f"Admin {admin_email} detalhes cliente: {client_id}")
     try:
         client_ref = db.collection('cabeleireiros').document(client_id); client_doc = client_ref.get()
         if not client_doc.exists: raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cliente não encontrado.")
-        client_data = client_doc.to_dict()
+        client_data = client_doc.to_Dict()
         services_ref = client_ref.collection('servicos').stream()
-        services_list = [Service(id=doc.id, **doc.to_dict()) for doc in services_ref]
+        services_list = [Service(id=doc.id, **doc.to_Dict()) for doc in services_ref]
         client_details = ClientDetail(id=client_doc.id, servicos=services_list, **client_data) 
         return client_details
     except Exception as e: logging.exception(f"Erro buscar detalhes cliente {client_id}:"); raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno.")
 # --- Endpoint de Criação (CORRIGIDO PARA SALVAR O UID) ---
 @router.post("/clientes", response_model=ClientDetail, status_code=status.HTTP_201_CREATED)
-async def create_client(client_data: NewClientData, current_user: dict = Depends(get_current_user)):
+async def create_client(client_data: NewClientData, current_user: Dict = Depends(get_current_user)):
     """Cria um novo cliente (cabeleireiro), salvando o UID do dono."""
     admin_email = current_user.get("email")
     user_uid = current_user.get("uid")
@@ -165,7 +170,7 @@ async def create_client(client_data: NewClientData, current_user: dict = Depends
         if client_ref.get().exists: 
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Cliente {client_id} já existe.")
         
-        data_to_save = client_data.dict() 
+        data_to_save = client_data.Dict() 
         
         # --- ADIÇÃO CRÍTICA ---
         data_to_save['ownerUID'] = user_uid # <<< Vincula o salão ao usuário
@@ -182,7 +187,7 @@ async def create_client(client_data: NewClientData, current_user: dict = Depends
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno.")
 
 @router.put("/clientes/{client_id}", response_model=ClientDetail)
-async def update_client(client_id: str, client_update_data: ClientDetail, current_user: dict = Depends(get_current_user)):
+async def update_client(client_id: str, client_update_data: ClientDetail, current_user: Dict = Depends(get_current_user)):
     # ... (código existente da transação) ...
     admin_email = current_user.get("email"); logging.info(f"Admin {admin_email} atualizando: {client_id}")
     if client_id != client_update_data.id: raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="ID URL não corresponde aos dados.")
@@ -190,7 +195,7 @@ async def update_client(client_id: str, client_update_data: ClientDetail, curren
         client_ref = db.collection('cabeleireiros').document(client_id)
         if not client_ref.get(retry=None, timeout=None).exists: raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cliente não encontrado.")
         
-        client_info = client_update_data.dict(exclude={'servicos', 'id'}, exclude_unset=True)
+        client_info = client_update_data.Dict(exclude={'servicos', 'id'}, exclude_unset=True)
         updated_services = client_update_data.servicos
 
         @firestore.transactional
@@ -201,8 +206,8 @@ async def update_client(client_id: str, client_update_data: ClientDetail, curren
             for old_ref in old_services_refs: transaction.delete(old_ref)
             for service_data in services_to_save:
                  new_service_ref = services_ref.document()
-                 service_dict = service_data.dict(exclude={'id'}, exclude_unset=True, exclude_none=True)
-                 transaction.set(new_service_ref, service_dict)
+                 service_Dict = service_data.Dict(exclude={'id'}, exclude_unset=True, exclude_none=True)
+                 transaction.set(new_service_ref, service_Dict)
 
         transaction = db.transaction()
         update_in_transaction(transaction, client_ref, client_info, updated_services)
@@ -217,7 +222,7 @@ async def update_client(client_id: str, client_update_data: ClientDetail, curren
 @router.post("/calendario/agendar", status_code=status.HTTP_201_CREATED)
 async def create_manual_appointment(
     manual_data: ManualAppointmentData,
-    current_user: dict[str, any] = Depends(get_current_user)
+    current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     """
     Endpoint protegido para o dono do salão adicionar um agendamento manualmente.
@@ -266,7 +271,7 @@ async def get_calendar_events(
     salao_id: str, 
     start: str, # FullCalendar envia ?start=...&end=...
     end: str,
-    current_user: dict = Depends(get_current_user)
+    current_user: Dict = Depends(get_current_user)
 ):
     """
     Busca os agendamentos de um salão específico no Firestore
@@ -290,7 +295,7 @@ async def get_calendar_events(
 
         eventos = []
         for doc in docs:
-            data = doc.to_dict()
+            data = doc.to_Dict()
             
             # (Opcional: Adicionar cores baseadas no serviço, etc.)
             
