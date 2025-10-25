@@ -100,18 +100,32 @@ async def get_client_details(client_id: str, current_user: dict = Depends(get_cu
 
 @router.post("/clientes", response_model=ClientDetail, status_code=status.HTTP_201_CREATED)
 async def create_client(client_data: NewClientData, current_user: dict = Depends(get_current_user)):
-    # ... (código existente) ...
+    """Cria um novo cliente (cabeleireiro), salvando todos os campos (incluindo defaults)."""
     admin_email = current_user.get("email"); logging.info(f"Admin {admin_email} criando: {client_data.nome_salao}")
     client_id = client_data.numero_whatsapp
+    
     try:
         client_ref = db.collection('cabeleireiros').document(client_id)
-        if client_ref.get().exists: raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Cliente {client_id} já existe.")
-        data_to_save = client_data.dict(exclude_unset=True)
+        if client_ref.get().exists: 
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Cliente {client_id} já existe.")
+        
+        # --- CORREÇÃO AQUI ---
+        # Removemos 'exclude_unset=True'
+        # Agora, 'data_to_save' conterá nome, whatsapp, calendar_id E
+        # todos os valores padrão (cores, tagline, dias_trabalho, etc.)
+        data_to_save = client_data.dict() 
+        # --- FIM DA CORREÇÃO ---
+        
         client_ref.set(data_to_save)
         logging.info(f"Cliente '{data_to_save['nome_salao']}' criado ID: {client_id}")
+        
+        # Retorna o ClientDetail completo (serviços vazio)
         return ClientDetail(id=client_id, servicos=[], **data_to_save)
+        
     except HTTPException as httpe: raise httpe
-    except Exception as e: logging.exception(f"Erro ao criar cliente:"); raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno.")
+    except Exception as e:
+        logging.exception(f"Erro ao criar cliente:");
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno.")
 
 @router.put("/clientes/{client_id}", response_model=ClientDetail)
 async def update_client(client_id: str, client_update_data: ClientDetail, current_user: dict = Depends(get_current_user)):

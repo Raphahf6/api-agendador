@@ -40,15 +40,19 @@ class NewClientData(BaseModel): # Admin
     nome_salao: str
     numero_whatsapp: str = Field(..., pattern=r"^\+55\d{10,11}$")
     calendar_id: str
-    tagline: Optional[str] = None
+    
+    # Adicionamos valores padrão para os campos que o frontend não envia
+    tagline: str = "Bem-vindo(a) ao seu Horalis!"
     dias_trabalho: List[str] = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday']
     horario_inicio: str = '09:00'
     horario_fim: str = '18:00'
-    url_logo: Optional[str] = None
-    cor_primaria: Optional[str] = None
-    cor_secundaria: Optional[str] = None
-    cor_gradiente_inicio: Optional[str] = None
-    cor_gradiente_fim: Optional[str] = None
+    url_logo: Optional[str] = None # Logo pode ser nulo
+    
+    # Cores padrão (para evitar 'null' que quebra o frontend)
+    cor_primaria: str = "#6366F1" 
+    cor_secundaria: str = "#EC4899"
+    cor_gradiente_inicio: str = "#A78BFA"
+    cor_gradiente_fim: str = "#F472B6"
 
 class Appointment(BaseModel): # Cliente Final (Payload para POST /agendamentos)
     salao_id: str
