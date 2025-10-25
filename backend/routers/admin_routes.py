@@ -56,36 +56,35 @@ class ManualAppointmentData(BaseModel):
     
 # --- NOVOS ENDPOINTS OAUTH ---
 # (Estes endpoints usam a autenticação de token do Horalis)
-@router.get("/google/auth/start")
+@router.get("/google/auth/start", response_model=dict[str, str]) # Define o modelo de resposta
 async def google_auth_start(current_user: dict[str, any] = Depends(get_current_user)):
     """
     PASSO 1: Inicia o fluxo OAuth2.
-    Redireciona o dono do salão para a tela de consentimento do Google.
+    Retorna a URL de autorização do Google para o frontend.
     """
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
         logging.error("Credenciais OAuth do Google não configuradas no ambiente.")
         raise HTTPException(status_code=500, detail="Integração com Google não configurada.")
         
     flow = Flow.from_client_secrets_file(
-        None, # Não estamos a usar um ficheiro, vamos usar os secrets
+        None, 
         scopes=SCOPES,
         redirect_uri=REDIRECT_URI
     )
     
-    # Substitui os segredos pelos valores do ambiente
     flow.client_config['client_id'] = GOOGLE_CLIENT_ID
     flow.client_config['client_secret'] = GOOGLE_CLIENT_SECRET
     
-    # 'access_type='offline'' é CRUCIAL para obter um 'refresh_token'
-    # 'state' é usado para passar o UID do nosso usuário para o callback
     authorization_url, state = flow.authorization_url(
         access_type='offline',
-        prompt='consent', # Força o Google a pedir o refresh_token
+        prompt='consent', 
         state=current_user.get("uid") # Passa o UID do Firebase para o próximo passo
     )
     
-    logging.info(f"Redirecionando usuário {current_user.get('email')} para a autorização do Google...")
-    return RedirectResponse(authorization_url)
+    logging.info(f"Enviando URL de autorização do Google para o usuário {current_user.get('email')}...")
+    
+    # EM VEZ DE REDIRECIONAR, RETORNA O JSON
+    return {"authorization_url": authorization_url}
 
 @router.get("/google/auth/callback")
 async def google_auth_callback(
