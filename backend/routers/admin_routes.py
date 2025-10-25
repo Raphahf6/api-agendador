@@ -337,7 +337,7 @@ async def google_auth_callback_handler(
     scope: str  # Os escopos que o Google aprovou
 ):
     """
-    PASSO 2 (Real): O Google redireciona o usuário para cá após o consentimento.
+    PASSO 2: O Google redireciona o usuário para cá após o consentimento.
     Troca o 'code' por um 'refresh_token' e salva-o no Firestore.
     """
     logging.info(f"Recebido callback do Google para o state (UID): {state}")
@@ -345,43 +345,39 @@ async def google_auth_callback_handler(
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
         logging.error("Credenciais OAuth do Google não configuradas no ambiente.")
         raise HTTPException(status_code=500, detail="Integração com Google não configurada.")
-        
-    flow = Flow.from_client_secrets_file(
-        None,
+    
+    client_config = {
+        "web": {
+            "client_id": GOOGLE_CLIENT_ID, "client_secret": GOOGLE_CLIENT_SECRET,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token"
+        }
+    }
+    
+    flow = Flow.from_client_config(
+        client_config=client_config,
         scopes=SCOPES,
         redirect_uri=REDIRECT_URI
     )
-    flow.client_config['client_id'] = GOOGLE_CLIENT_ID
-    flow.client_config['client_secret'] = GOOGLE_CLIENT_SECRET
     
     try:
-        # Troca o código (code) pelo token de acesso e refresh_token
         flow.fetch_token(code=code)
-        
         credentials = flow.credentials
         refresh_token = credentials.refresh_token
         
         if not refresh_token:
-            logging.error("Falha ao obter refresh_token do Google. O usuário pode já ter consentido.")
             raise HTTPException(status_code=400, detail="Falha ao obter o token de atualização do Google. Tente remover o acesso Horalis da sua conta Google e tente novamente.")
 
-        # O 'state' é o UID do Firebase que passámos
         user_uid = state
-        
-        # --- LÓGICA DE ATUALIZAÇÃO DO FIRESTORE ---
-        # Precisamos encontrar o documento do salão que pertence a este UID
-        # (Usando a mesma lógica do endpoint /user/salao-id)
         clients_ref = db.collection('cabeleireiros')
         query = clients_ref.where('ownerUID', '==', user_uid).limit(1) 
         client_doc_list = list(query.stream())
         
         if not client_doc_list:
-            logging.error(f"Callback OAuth recebido, mas nenhum salão encontrado para o UID: {user_uid}")
             raise HTTPException(status_code=404, detail="Usuário autenticado, mas nenhum salão Horalis encontrado.")
             
         salao_doc_ref = client_doc_list[0].reference
         
-        # Salva o refresh_token no documento do salão
         salao_doc_ref.update({
             "google_refresh_token": refresh_token,
             "google_sync_enabled": True
@@ -389,8 +385,6 @@ async def google_auth_callback_handler(
         
         logging.info(f"Refresh Token do Google salvo com sucesso para o salão: {salao_doc_ref.id}")
 
-        # Redireciona o usuário de volta para a página de configurações do painel
-        # O frontend deve mostrar "Sucesso!"
         frontend_redirect_url = f"https://horalis.rebdigitalsolucoes.com.br/painel/{salao_doc_ref.id}/configuracoes?sync=success"
         return RedirectResponse(frontend_redirect_url)
 
@@ -398,3 +392,4 @@ async def google_auth_callback_handler(
         logging.exception(f"Erro CRÍTICO durante o callback do Google OAuth: {e}")
         frontend_error_url = f"https://horalis.rebdigitalsolucoes.com.br/painel/{state}/configuracoes?sync=error"
         return RedirectResponse(frontend_error_url)
+# --- FIM DOS ENDPOINTS OAUTH ---
