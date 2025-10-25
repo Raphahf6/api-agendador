@@ -24,6 +24,12 @@ router = APIRouter(
     dependencies=[Depends(get_current_user)] # Proteção GLOBAL para /admin
 )
 
+callback_router = APIRouter(
+    prefix="/admin", 
+    tags=["Admin - OAuth Callback"],
+    # SEM 'dependencies'
+)
+
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET")
 SCOPES = ['https://www.googleapis.com/auth/calendar']
@@ -91,23 +97,6 @@ async def google_auth_start(current_user: Dict[str, Any] = Depends(get_current_u
     # Retorna o JSON (como o frontend espera)
     return {"authorization_url": authorization_url}
 # --- FIM DA CORREÇÃO ---
-
-@router.get("/google/auth/callback")
-async def google_auth_callback(
-    state: str, # O UID que passámos no passo 1
-    code: str, # O código de autorização do Google
-    # Este endpoint NÃO pode ter o 'Depends(get_current_user)' global
-    # porque é o Google que o está a chamar, não o nosso frontend.
-    # Vamos criar uma nova instância de router SÓ para este endpoint.
-):
-    """
-    PASSO 2: O Google redireciona o usuário para cá após o consentimento.
-    Troca o 'code' por um 'refresh_token' e salva-o no Firestore.
-    """
-    # Este endpoint será recriado abaixo, fora do router protegido
-    pass
-
-# --- FIM DOS NOVOS ENDPOINTS ---
 
 @router.get("/user/salao-id", response_model=Dict[str, str])
 async def get_salao_id_for_user(current_user: Dict[str, Any] = Depends(get_current_user)):
@@ -324,11 +313,7 @@ async def get_calendar_events(
     # --- ROTEADOR PÚBLICO PARA O CALLBACK ---
 # Precisamos de um novo router que NÃO tenha a dependência de autenticação
 # para o Google poder chamar o /callback
-callback_router = APIRouter(
-    prefix="/admin", 
-    tags=["Admin - OAuth Callback"],
-    # SEM 'dependencies'
-)
+
 
 @callback_router.get("/google/auth/callback")
 async def google_auth_callback_handler(
