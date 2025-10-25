@@ -24,19 +24,11 @@ router = APIRouter(
     dependencies=[Depends(get_current_user)] # Proteção GLOBAL para /admin
 )
 
-# --- CONFIGURAÇÕES DO GOOGLE OAUTH ---
-# (Lê as variáveis de ambiente que você configurou no Render)
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET")
-
-# O escopo que pediremos (ler e escrever no calendário)
 SCOPES = ['https://www.googleapis.com/auth/calendar']
-
-# A URL de callback (DEVE ser a mesma que você configurou no Google Cloud)
-# NOTA: Ajuste esta URL se a sua URL do Render for diferente
 RENDER_API_URL = "https://api-agendador.onrender.com" 
 REDIRECT_URI = f"{RENDER_API_URL}/api/v1/admin/google/auth/callback"
-# --- FIM DA CONFIGURAÇÃO OAUTH ---
 
 # --- Modelo de Evento (O que o FullCalendar espera) ---
 class CalendarEvent(BaseModel):
@@ -58,8 +50,10 @@ class ManualAppointmentData(BaseModel):
     # Não precisamos de service_id, pois é um agendamento manual
     
     
-# --- CORREÇÃO AQUI: MUDAR DE RedirectResponse PARA JSON ---
-@router.get("/admin/google/auth/start", response_model=Dict[str, str]) # Define o modelo de resposta
+# --- NOVOS ENDPOINTS OAUTH ---
+
+# --- CORREÇÃO AQUI: MUDAR DE Flow.from_client_secrets_file PARA Flow.from_client_config ---
+@router.get("/google/auth/start", response_model=Dict[str, str]) # Define o modelo de resposta
 async def google_auth_start(current_user: Dict[str, Any] = Depends(get_current_user)):
     """
     PASSO 1: Inicia o fluxo OAuth2.
@@ -68,16 +62,23 @@ async def google_auth_start(current_user: Dict[str, Any] = Depends(get_current_u
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
         logging.error("Credenciais OAuth do Google não configuradas no ambiente.")
         raise HTTPException(status_code=500, detail="Integração com Google não configurada.")
-        
-    flow = Flow.from_client_secrets_file(
-        None, # Não estamos a usar um ficheiro, vamos usar os secrets
+    
+    # Configuração do cliente (o que 'from_client_secrets_file' faria)
+    client_config = {
+        "web": {
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token"
+        }
+    }
+    
+    # USA 'from_client_config' EM VEZ DE 'from_client_secrets_file(None,...)'
+    flow = Flow.from_client_config(
+        client_config=client_config, 
         scopes=SCOPES,
         redirect_uri=REDIRECT_URI
     )
-    
-    # Substitui os segredos pelos valores do ambiente
-    flow.client_config['client_id'] = GOOGLE_CLIENT_ID
-    flow.client_config['client_secret'] = GOOGLE_CLIENT_SECRET
     
     authorization_url, state = flow.authorization_url(
         access_type='offline',
@@ -87,7 +88,7 @@ async def google_auth_start(current_user: Dict[str, Any] = Depends(get_current_u
     
     logging.info(f"Enviando URL de autorização do Google para o usuário {current_user.get('email')}...")
     
-    # EM VEZ DE REDIRECIONAR, RETORNA O JSON
+    # Retorna o JSON (como o frontend espera)
     return {"authorization_url": authorization_url}
 # --- FIM DA CORREÇÃO ---
 
