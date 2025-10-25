@@ -37,50 +37,29 @@ class ManualAppointmentData(BaseModel):
     service_name: str = Field(..., min_length=3)
     # Não precisamos de service_id, pois é um agendamento manual
 
-# --- ENDPOINT PARA BUSCAR O WHATSAPP VINCULADO ---
 @router.get("/user/salao-id", response_model=dict[str, str])
 async def get_salao_id_for_user(current_user: dict[str, any] = Depends(get_current_user)):
-    """
-    Busca o numero_whatsapp (ID do salão) associado ao usuário logado (pelo email do Firebase).
-    Esta rota é chamada imediatamente após o login bem-sucedido.
-    """
-    user_email = current_user.get("email")
+    """Busca o numero_whatsapp (ID do salão) associado ao usuário logado (pelo UID)."""
     user_uid = current_user.get("uid")
-    
-    logging.info(f"Admin {user_email} (UID: {user_uid}) solicitou ID do salão.")
+    logging.info(f"Admin (UID: {user_uid}) solicitou ID do salão.")
     
     try:
-        # 1. Busca na coleção 'cabeleireiros' pelo email do usuário
-        # No nosso modelo de auto-cadastro, assumimos que o campo 'email' está vinculado.
-        # Como não criamos um campo 'email' na coleção cabeleireiros, vamos assumir
-        # que o numero_whatsapp do salão é o ID único.
-        
-        # Vamos pesquisar o salão que tenha o mesmo email de login cadastrado
-        # (Esta lógica precisa ser refinada, mas serve para o MVP):
-        
-        # NOTE: A forma como o Salão foi cadastrado é crucial aqui. 
-        # Vamos buscar o salão cujo 'calendar_id' (que usamos como placeholder) seja igual ao email do usuário logado.
-        
         clients_ref = db.collection('cabeleireiros')
-        # Filtra por um campo que contenha o email do usuário logado.
-        query = clients_ref.where('calendar_id', '==', user_email).limit(1) 
+        # Busca o salão que tenha o campo 'ownerUID' igual ao UID do usuário logado
+        query = clients_ref.where('ownerUID', '==', user_uid).limit(1) 
+        client_doc_list = list(query.stream()) # Executa a query
         
-        client_doc = next(query.stream(), None)
-        
-        if not client_doc:
-            # Se o salão não for encontrado, significa que o usuário não cadastrou o salão (ou logou com a conta errada).
+        if not client_doc_list:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, 
                                 detail="Nenhum salão encontrado para esta conta de usuário.")
                                 
-        # O ID do documento é o numero_whatsapp que precisamos
-        salao_id = client_doc.id 
-        
+        salao_id = client_doc_list[0].id # O ID do documento é o numero_whatsapp
         return {"salao_id": salao_id}
         
     except HTTPException as httpe:
         raise httpe
     except Exception as e:
-        logging.exception(f"Erro ao buscar salão por email ({user_email}): {e}")
+        logging.exception(f"Erro ao buscar salão por UID ({user_uid}): {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno ao buscar o ID do salão.")
 
 # --- Endpoints CRUD de Clientes (Sem alterações) ---
@@ -106,11 +85,13 @@ async def get_client_details(client_id: str, current_user: dict = Depends(get_cu
         client_details = ClientDetail(id=client_doc.id, servicos=services_list, **client_data) 
         return client_details
     except Exception as e: logging.exception(f"Erro buscar detalhes cliente {client_id}:"); raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno.")
-
+# --- Endpoint de Criação (CORRIGIDO PARA SALVAR O UID) ---
 @router.post("/clientes", response_model=ClientDetail, status_code=status.HTTP_201_CREATED)
 async def create_client(client_data: NewClientData, current_user: dict = Depends(get_current_user)):
-    """Cria um novo cliente (cabeleireiro), salvando todos os campos (incluindo defaults)."""
-    admin_email = current_user.get("email"); logging.info(f"Admin {admin_email} criando: {client_data.nome_salao}")
+    """Cria um novo cliente (cabeleireiro), salvando o UID do dono."""
+    admin_email = current_user.get("email")
+    user_uid = current_user.get("uid")
+    logging.info(f"Admin {admin_email} (UID: {user_uid}) criando: {client_data.nome_salao}")
     client_id = client_data.numero_whatsapp
     
     try:
@@ -118,17 +99,15 @@ async def create_client(client_data: NewClientData, current_user: dict = Depends
         if client_ref.get().exists: 
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Cliente {client_id} já existe.")
         
-        # --- CORREÇÃO AQUI ---
-        # Removemos 'exclude_unset=True'
-        # Agora, 'data_to_save' conterá nome, whatsapp, calendar_id E
-        # todos os valores padrão (cores, tagline, dias_trabalho, etc.)
         data_to_save = client_data.dict() 
-        # --- FIM DA CORREÇÃO ---
+        
+        # --- ADIÇÃO CRÍTICA ---
+        data_to_save['ownerUID'] = user_uid # <<< Vincula o salão ao usuário
+        # --- FIM DA ADIÇÃO ---
         
         client_ref.set(data_to_save)
-        logging.info(f"Cliente '{data_to_save['nome_salao']}' criado ID: {client_id}")
+        logging.info(f"Cliente '{data_to_save['nome_salao']}' (Dono: {user_uid}) criado ID: {client_id}")
         
-        # Retorna o ClientDetail completo (serviços vazio)
         return ClientDetail(id=client_id, servicos=[], **data_to_save)
         
     except HTTPException as httpe: raise httpe
