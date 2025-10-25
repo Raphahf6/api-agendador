@@ -27,6 +27,15 @@ class CalendarEvent(BaseModel):
     backgroundColor: Optional[str] = None
     borderColor: Optional[str] = None
     extendedProps: Optional[dict] = None
+    
+class ManualAppointmentData(BaseModel):
+    salao_id: str
+    start_time: str # ISO string
+    duration_minutes: int
+    customer_name: str = Field(..., min_length=2)
+    customer_phone: Optional[str] = None
+    service_name: str = Field(..., min_length=3)
+    # Não precisamos de service_id, pois é um agendamento manual
 
 # --- ENDPOINT PARA BUSCAR O WHATSAPP VINCULADO ---
 @router.get("/user/salao-id", response_model=dict[str, str])
@@ -160,6 +169,51 @@ async def update_client(client_id: str, client_update_data: ClientDetail, curren
     except HTTPException as httpe: raise httpe
     except Exception as e: logging.exception(f"Erro CRÍTICO ao atualizar cliente {client_id}:"); raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno.")
 
+@router.post("/calendario/agendar", status_code=status.HTTP_201_CREATED)
+async def create_manual_appointment(
+    manual_data: ManualAppointmentData,
+    current_user: dict[str, any] = Depends(get_current_user)
+):
+    """
+    Endpoint protegido para o dono do salão adicionar um agendamento manualmente.
+    Salva diretamente no Firestore na coleção 'agendamentos'.
+    """
+    user_email = current_user.get("email")
+    logging.info(f"Admin {user_email} criando agendamento manual para {manual_data.salao_id}")
+
+    # 1. Validação de Conflito (Ainda vamos implementar a verificação no Firestore)
+    # Por enquanto, assumimos que o dono do salão sabe o que está a fazer.
+
+    try:
+        # Converte a string ISO 'start_time' para um objeto datetime
+        start_time_dt = datetime.fromisoformat(manual_data.start_time)
+        end_time_dt = start_time_dt + timedelta(minutes=manual_data.duration_minutes)
+        
+        # 2. Preparar os dados para o Firestore
+        agendamento_data = {
+            "salaoId": manual_data.salao_id,
+            "serviceName": manual_data.service_name,
+            "durationMinutes": manual_data.duration_minutes,
+            "startTime": start_time_dt,
+            "endTime": end_time_dt,
+            "customerName": manual_data.customer_name,
+            "customerPhone": manual_data.customer_phone or "N/A",
+            "status": "manual", # Indica que foi inserido manualmente pelo salão
+            "createdBy": user_email, # Quem inseriu
+            "createdAt": firestore.SERVER_TIMESTAMP 
+        }
+        
+        # 3. Salvar na sub-coleção 'agendamentos'
+        agendamento_ref = db.collection('cabeleireiros').document(manual_data.salao_id).collection('agendamentos').document()
+        agendamento_ref.set(agendamento_data)
+        
+        logging.info(f"Agendamento manual criado com ID: {agendamento_ref.id} pelo admin {user_email}")
+        
+        return {"message": "Agendamento manual criado com sucesso!", "id": agendamento_ref.id}
+
+    except Exception as e:
+        logging.exception(f"Erro CRÍTICO ao criar agendamento manual:")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno ao criar agendamento manual.")
 
 # --- NOVO ENDPOINT PARA O CALENDÁRIO DO PAINEL ---
 @router.get("/calendario/{salao_id}/eventos", response_model=List[CalendarEvent])
