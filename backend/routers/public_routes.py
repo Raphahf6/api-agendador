@@ -38,7 +38,7 @@ async def get_available_slots_endpoint(
     service_id: str,
     date: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
 ):
-    """Busca horários disponíveis (agora lendo do FIRESTORE + GOOGLE)."""
+    """Busca horários disponíveis (lendo do FIRESTORE + GOOGLE)."""
     logging.info(f"Buscando horários (Híbrido) para salão {salao_id} em {date}")
     try:
         salon_data = get_hairdresser_data_from_db(salao_id)
@@ -50,14 +50,13 @@ async def get_available_slots_endpoint(
         duration = service_info.get('duracao_minutos')
         if duration is None: raise HTTPException(status_code=500, detail="Duração do serviço não encontrada.")
 
-        # --- CHAMADA DA FUNÇÃO ATUALIZADA (Lógica Híbrida) ---
+        # --- CHAMADA DA FUNÇÃO HÍBRIDA (Leitura) ---
         available_slots = calendar_service.find_available_slots(
             salao_id=salao_id,
             salon_data=salon_data, # Passa o dict 'salon_data' inteiro
             service_duration_minutes=duration,
             date_str=date
         )
-        # --- FIM DA CHAMADA ATUALIZADA ---
         
         return {"horarios_disponiveis": available_slots}
     except Exception as e:
@@ -88,10 +87,11 @@ async def create_appointment(appointment: Appointment):
         duration = service_info.get('duracao_minutos')
         service_name = service_info.get('nome_servico')
         salon_name = salon_data.get('nome_salao')
-        salon_email_destino = salon_data.get('calendar_id') # Usando calendar_id como e-mail do salão
+        # Usamos o 'calendar_id' como o e-mail de destino do Resend
+        salon_email_destino = salon_data.get('calendar_id') 
 
         if duration is None or service_name is None or not salon_email_destino:
-            raise HTTPException(status_code=500, detail="Dados do serviço ou email de destino incompletos.")
+            raise HTTPException(status_code=500, detail="Dados do serviço ou e-mail de destino incompletos.")
 
         # 2. Validação do telefone
         cleaned_phone = re.sub(r'\D', '', user_phone)
@@ -132,8 +132,8 @@ async def create_appointment(appointment: Appointment):
             logging.error(f"Erro CRÍTICO ao disparar e-mail Resend: {e}")
             # Não quebra o agendamento, apenas loga.
 
-        # 5. --- CORREÇÃO: LÓGICA DE ESCRITA HÍBRIDA (ITEM 5) ---
-        # Verifica se a sincronização está ativa e se temos um token
+        # 5. --- LÓGICA DE ESCRITA HÍBRIDA (ITEM 5 - IMPLEMENTADO) ---
+        # Verifica se a sincronização está ativa E se temos um token
         if salon_data.get("google_sync_enabled") and salon_data.get("google_refresh_token"):
             logging.info(f"Sincronização Google Ativa para {salao_id}. Tentando salvar no Google Calendar.")
             
@@ -159,8 +159,8 @@ async def create_appointment(appointment: Appointment):
                 # Pega exceções da chamada de sincronização sem quebrar o agendamento
                 logging.error(f"Erro inesperado ao tentar salvar no Google Calendar: {e}")
         else:
-            logging.info("Sincronização Google desativada ou refresh_token ausente. Pulando etapa de escrita no Google.")
-        # --- FIM DA CORREÇÃO ---
+            logging.info(f"Sincronização Google desativada ou refresh_token ausente para {salao_id}. Pulando etapa de escrita no Google.")
+        # --- FIM DA LÓGICA DE ESCRITA HÍBRIDA ---
 
         # 6. Retorna a resposta ao cliente final
         return {"message": f"Agendamento para '{service_name}' criado com sucesso!"}
@@ -169,3 +169,4 @@ async def create_appointment(appointment: Appointment):
     except Exception as e:
         logging.exception(f"Erro CRÍTICO ao criar agendamento (Híbrido):")
         raise HTTPException(status_code=500, detail="Erro interno ao criar agendamento.")
+
