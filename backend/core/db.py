@@ -48,39 +48,24 @@ def get_hairdresser_data_from_db(salao_id: str):
             logging.warning(f"Salão não encontrado no Firestore: {salao_id}")
             return None
         
+        # 1. Pega o dicionário COMPLETO (com token, sync_enabled, etc.)
         hairdresser_data = hairdresser_doc.to_dict()
         
+        # 2. Busca os serviços da subcoleção
         services_ref = doc_ref.collection('servicos')
         services_stream = services_ref.stream()
         services_dict_with_ids = {doc.id: doc.to_dict() for doc in services_stream} # Guarda ID e dados
         
-        # Retorna o dicionário de dados brutos
-        return {
-            "nome_salao": hairdresser_data.get('nome_salao'), "tagline": hairdresser_data.get('tagline'),
-            "calendar_id": hairdresser_data.get('calendar_id'), "servicos_data": services_dict_with_ids,
-            "dias_trabalho": hairdresser_data.get('dias_trabalho', []), "horario_inicio": hairdresser_data.get('horario_inicio', '09:00'),
-            "horario_fim": hairdresser_data.get('horario_fim', '18:00'), "url_logo": hairdresser_data.get('url_logo'),
-            "cor_primaria": hairdresser_data.get('cor_primaria', "#6366F1"), "cor_secundaria": hairdresser_data.get('cor_secundaria', "#EC4899"),
-            "cor_gradiente_inicio": hairdresser_data.get('cor_gradiente_inicio', "#A78BFA"), "cor_gradiente_fim": hairdresser_data.get('cor_gradiente_fim', "#F472B6")
-        }
+        # --- A CORREÇÃO ESTÁ AQUI ---
+        
+        # 3. Adiciona os serviços ao dicionário COMPLETO
+        hairdresser_data['servicos_data'] = services_dict_with_ids
+        
+        # 4. Retorna o dicionário COMPLETO
+        return hairdresser_data
+        # --- FIM DA CORREÇÃO ---
+
     except Exception as e: 
         logging.error(f"Erro ao buscar dados Firestore para {salao_id}: {e}")
-        return None
-
-def get_all_clients_from_db():
-    """Busca todos os documentos da coleção 'cabeleireiros' (para Admin)."""
-    if db is None:
-        logging.error("Firestore DB não está inicializado. get_all_clients_from_db falhou.")
-        return None
-    try:
-        clients_ref = db.collection('cabeleireiros').stream()
-        clients_list = []
-        for doc in clients_ref:
-            client_data = doc.to_dict()
-            # Usa o modelo Pydantic 'ClientDetail' importado
-            clients_list.append(ClientDetail(id=doc.id, servicos=[], **client_data))
-        return clients_list
-    except Exception as e: 
-        logging.error(f"Erro ao buscar todos os clientes: {e}")
         return None
 
