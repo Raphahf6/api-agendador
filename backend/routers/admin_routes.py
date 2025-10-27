@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 # --- NOVOS IMPORTS PARA GOOGLE OAUTH ---
 from google_auth_oauthlib.flow import Flow
 # --- FIM DOS NOVOS IMPORTS ---
+import pytz
 
 # Importações dos nossos módulos refatorados
 from core.models import ClientDetail, NewClientData, Service
@@ -373,13 +374,14 @@ async def cancel_appointment(
 async def reschedule_appointment(
     salao_id: str, 
     agendamento_id: str,
-    body: ReagendamentoBody, # <<< Usa o Pydantic Model
+    body: ReagendamentoBody,
     current_user: dict = Depends(get_current_user)
 ):
     """
-    Reagenda um agendamento (Atualiza no Firestore e no Google Calendar)
+    Reagenda um agendamento.
+    AGORA VERIFICA CONFLITOS antes de salvar.
     """
-    logging.info(f"Admin {current_user.get('email')} reagendando {agendamento_id} para {body.new_start_time}")
+    logging.info(f"Admin {current_user.get('email')} tentando reagendar {agendamento_id} para {body.new_start_time}")
     
     try:
         agendamento_ref = db.collection('cabeleireiros').document(salao_id).collection('agendamentos').document(agendamento_id)
@@ -391,20 +393,53 @@ async def reschedule_appointment(
         agendamento_data = agendamento_doc.to_dict()
         google_event_id = agendamento_data.get("googleEventId")
         duration = agendamento_data.get("durationMinutes")
+        
+        # <<< ADICIONADO: Pega dados do salão para o verificador >>>
+        salon_data = get_hairdresser_data_from_db(salao_id)
 
         if not duration:
             raise HTTPException(status_code=500, detail="Agendamento não possui duração definida.")
+        if not salon_data:
+             raise HTTPException(status_code=404, detail="Dados do salão não encontrados.")
 
         # Calcular novos horários
         new_start_dt = datetime.fromisoformat(body.new_start_time)
+        
+        # <<< ADICIONADO: Garante que a data/hora tenha fuso horário local >>>
+        # (Se a string ISO do frontend já tiver fuso, isso se ajusta. 
+        # Se não tiver, assume o fuso local)
+        local_tz = pytz.timezone(calendar_service.LOCAL_TIMEZONE)
+        if new_start_dt.tzinfo is None:
+             new_start_dt = local_tz.localize(new_start_dt)
+        else:
+             new_start_dt = new_start_dt.astimezone(local_tz)
+        
         new_end_dt = new_start_dt + timedelta(minutes=duration)
         
-        # 1. Sincronização: Atualizar no Google Calendar
+        # --- <<< ADICIONADO: VERIFICAÇÃO DE CONFLITO >>> ---
+        is_free = calendar_service.is_slot_available(
+            salao_id=salao_id,
+            salon_data=salon_data,
+            new_start_dt=new_start_dt,
+            duration_minutes=duration,
+            ignore_firestore_id=agendamento_id,
+            ignore_google_event_id=google_event_id
+        )
+        
+        if not is_free:
+            logging.warning(f"Conflito de agendamento detectado para {salao_id} em {new_start_dt}")
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, # 409 Conflict
+                detail="Horário indisponível. Conflito com outro agendamento ou evento pessoal."
+            )
+        # --- <<< FIM DA VERIFICAÇÃO DE CONFLITO >>> ---
+
+        
+        # 1. Sincronização: Atualizar no Google Calendar (Se o slot estiver livre)
         if google_event_id:
-            salon_data = get_hairdresser_data_from_db(salao_id)
             refresh_token = salon_data.get("google_refresh_token")
             if refresh_token:
-                logging.info(f"Tentando atualizar evento do Google Calendar: {google_event_id}")
+                logging.info(f"Atualizando evento do Google Calendar: {google_event_id}")
                 calendar_service.update_google_event(
                     refresh_token, 
                     google_event_id, 
@@ -414,7 +449,7 @@ async def reschedule_appointment(
             else:
                 logging.warning(f"Não foi possível atualizar {google_event_id} no Google. Refresh token não encontrado.")
 
-        # 2. Atualizar no Firestore
+        # 2. Atualizar no Firestore (Se o slot estiver livre)
         agendamento_ref.update({
             "startTime": new_start_dt,
             "endTime": new_end_dt
@@ -423,12 +458,11 @@ async def reschedule_appointment(
 
         return {"message": "Agendamento reagendado com sucesso."}
 
+    except HTTPException as httpe:
+        raise httpe # Repassa o erro 409 (Conflito) ou outros
     except Exception as e:
         logging.exception(f"Erro ao reagendar agendamento {agendamento_id}:")
         raise HTTPException(status_code=500, detail=f"Erro interno: {e}")
-
-# --- <<< FIM DAS ADIÇÕES >>> ---
-
 
 # --- ROTEADOR PÚBLICO PARA O CALLBACK (Sem alterações) ---
 @callback_router.get("/google/auth/callback")

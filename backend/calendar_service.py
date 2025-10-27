@@ -309,3 +309,122 @@ def update_google_event(
         logging.exception(f"Erro inesperado ao ATUALIZAR evento {event_id}:")
         return False
 # --- <<< FIM DA ADIÇÃO >>> ---
+
+
+def is_slot_available(
+    salao_id: str,
+    salon_data: dict,
+    new_start_dt: datetime, # O novo horário de início (já como objeto datetime c/ fuso)
+    duration_minutes: int,
+    ignore_firestore_id: str, # O ID do agendamento que estamos arrastando
+    ignore_google_event_id: Optional[str] # O ID do Google Event (se houver)
+) -> bool:
+    """
+    Verifica se um slot de horário específico está livre, checando tanto o
+    Firestore quanto o Google Calendar, ignorando o próprio evento que está sendo movido.
+    Retorna True se o slot estiver livre, False se houver conflito.
+    """
+    if db is None: 
+        logging.error("Firestore DB não está inicializado (is_slot_available).")
+        return False # Falha fechada
+
+    try:
+        local_tz = pytz.timezone(LOCAL_TIMEZONE)
+        new_end_dt = new_start_dt + timedelta(minutes=duration_minutes)
+
+        # 1. Verificar contra o horário de funcionamento do salão
+        target_date_local = new_start_dt.date()
+        day_of_week_name = WEEKDAY_MAP_DB.get(target_date_local.weekday())
+        work_days = salon_data.get('dias_trabalho', [])
+        
+        if not day_of_week_name or day_of_week_name not in work_days:
+            logging.warning(f"[Verificação de Conflito] Falha: {target_date_local} é um dia de folga.")
+            return False # Conflito (dia de folga)
+
+        start_hour_str = salon_data.get('horario_inicio', '09:00')
+        end_hour_str = salon_data.get('horario_fim', '18:00')
+        start_work_time = datetime.strptime(start_hour_str, '%H:%M').time()
+        end_work_time = datetime.strptime(end_hour_str, '%H:%M').time()
+
+        day_start_dt = local_tz.localize(datetime.combine(target_date_local, start_work_time))
+        day_end_dt = local_tz.localize(datetime.combine(target_date_local, end_work_time))
+
+        if new_start_dt < day_start_dt or new_end_dt > day_end_dt:
+            logging.warning(f"[Verificação de Conflito] Falha: Horário ({new_start_dt.time()} - {new_end_dt.time()}) fora do expediente.")
+            return False # Conflito (fora do horário de trabalho)
+
+        # 2. Coletar todos os outros períodos ocupados (Híbrido)
+        busy_periods = []
+        
+        # Define a janela de busca (o dia inteiro, para garantir)
+        day_start_utc = day_start_dt.astimezone(pytz.utc)
+        day_end_utc = day_end_dt.astimezone(pytz.utc)
+
+        # --- FONTE 1: FIRESTORE (Outros Agendamentos Horalis) ---
+        try:
+            agendamentos_ref = db.collection('cabeleireiros').document(salao_id).collection('agendamentos')
+            query = agendamentos_ref.where("startTime", ">=", day_start_utc).where("startTime", "<", day_end_utc)
+            busy_periods_docs = query.stream()
+            
+            for doc in busy_periods_docs:
+                # <<< AQUI ESTÁ A LÓGICA DE IGNORAR >>>
+                if doc.id == ignore_firestore_id:
+                    continue # Pula o próprio agendamento que estamos movendo
+                    
+                data = doc.to_dict()
+                if data.get('startTime') and data.get('endTime'):
+                    busy_periods.append({
+                        "start": data['startTime'].astimezone(local_tz),
+                        "end": data['endTime'].astimezone(local_tz)
+                    })
+        except Exception as e:
+            logging.error(f"Erro ao buscar agendamentos do Firestore (is_slot_available): {e}")
+            return False # Falha fechada
+
+        # --- FONTE 2: GOOGLE CALENDAR (Eventos Pessoais) ---
+        refresh_token = salon_data.get("google_refresh_token")
+        if salon_data.get("google_sync_enabled") and refresh_token:
+            google_service = get_google_calendar_service(refresh_token)
+            if google_service:
+                try:
+                    events_result = google_service.events().list(
+                        calendarId='primary', 
+                        timeMin=day_start_dt.isoformat(), 
+                        timeMax=day_end_dt.isoformat(),
+                        singleEvents=True,
+                        timeZone=LOCAL_TIMEZONE
+                    ).execute()
+                    
+                    for event in events_result.get('items', []):
+                        # <<< AQUI ESTÁ A LÓGICA DE IGNORAR (Google) >>>
+                        if ignore_google_event_id and event.get('id') == ignore_google_event_id:
+                            continue # Pula o próprio evento do Google que estamos movendo
+
+                        start_str = event['start'].get('dateTime')
+                        end_str = event['end'].get('dateTime')
+                        transparency = event.get('transparency') 
+                        
+                        if start_str and end_str and transparency != 'transparent':
+                            busy_periods.append({
+                                "start": datetime.fromisoformat(start_str).astimezone(local_tz),
+                                "end": datetime.fromisoformat(end_str).astimezone(local_tz)
+                            })
+                except Exception as e:
+                    logging.error(f"Erro ao buscar eventos do Google (is_slot_available): {e}")
+                    return False # Falha fechada
+
+        # 3. Verificação Final de Conflito
+        for event in busy_periods:
+            # Verifica se o NOVO slot (new_start_dt/new_end_dt) colide com algum 'event'
+            if new_start_dt < event['end'] and new_end_dt > event['start']:
+                logging.warning(f"[Verificação de Conflito] Falha: Conflito detectado com evento das {event['start'].time()} às {event['end'].time()}.")
+                return False # Conflito!
+
+        # 4. Se passou por tudo, o slot está livre
+        logging.info(f"[Verificação de Conflito] Sucesso: Slot {new_start_dt.time()} está livre.")
+        return True
+
+    except Exception as e:
+        logging.exception(f"Erro inesperado em 'is_slot_available':")
+        return False # Falha fechada (assume que está ocupado se der erro)
+# --- <<< FIM DA ADIÇÃO >>> ---
