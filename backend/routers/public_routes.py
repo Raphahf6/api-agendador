@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, Query, status, Depends
 from datetime import datetime, timedelta 
 from firebase_admin import firestore 
 
+
 # Importações dos nossos módulos
 from core.models import SalonPublicDetails, Service, Appointment
 from core.db import get_hairdresser_data_from_db, db 
@@ -134,35 +135,47 @@ async def create_appointment(appointment: Appointment):
 
         # 5. --- LÓGICA DE ESCRITA HÍBRIDA (ITEM 5 - IMPLEMENTADO) ---
         # Verifica se a sincronização está ativa E se temos um token
+        google_event_data = {
+            "summary": f"{service_name} - {user_name}",
+            "description": f"Agendamento via Horalis.\nCliente: {user_name}\nTelefone: {user_phone}\nServiço: {service_name}",
+            "start_time_iso": start_time_dt.isoformat(), # Usa o datetime (agora string ISO)
+            "end_time_iso": end_time_dt.isoformat(),
+        }
         if salon_data.get("google_sync_enabled") and salon_data.get("google_refresh_token"):
-            logging.info(f"Sincronização Google Ativa para {salao_id}. Tentando salvar no Google Calendar.")
-            
-            # Formata os dados do evento para a função do Google
-            google_event_data = {
-                "summary": f"{service_name} - {user_name}",
-                "description": f"Agendamento via Horalis.\nCliente: {user_name}\nTelefone: {user_phone}\nServiço: {service_name}",
-                "start_time_iso": start_time_dt.isoformat(), # Usa o datetime (agora string ISO)
-                "end_time_iso": end_time_dt.isoformat(),
-            }
+            logging.info(f"DEBUG: Sincronização ATIVA. Refresh token encontrado.")
             
             try:
-                # Chama a nova função de escrita OAuth do calendar_service
+                # Pega o refresh token para logar
+                debug_token = salon_data.get("google_refresh_token")
+                logging.info(f"DEBUG: Token a ser usado (primeiros 10 chars): {debug_token[:10]}...")
+
                 google_success = calendar_service.create_google_event_with_oauth(
-                    refresh_token=salon_data.get("google_refresh_token"),
+                    refresh_token=debug_token,
                     event_data=google_event_data
                 )
+                
                 if google_success:
                     logging.info("Agendamento salvo com sucesso no Google Calendar (OAuth).")
                 else:
-                    logging.warning("Falha ao salvar no Google Calendar (OAuth) (função retornou False).")
+                    # <<< MUDANÇA CRÍTICA AQUI
+                    logging.error("DEBUG: A função create_google_event_with_oauth retornou 'False'.")
+                    # Força um erro 500 para vermos o log
+                    raise HTTPException(status_code=500, detail="DEBUG: create_google_event_with_oauth retornou 'False'.")
+            
             except Exception as e:
-                # Pega exceções da chamada de sincronização sem quebrar o agendamento
-                logging.error(f"Erro inesperado ao tentar salvar no Google Calendar: {e}")
+                # <<< MUDANÇA CRÍTICA AQUI
+                logging.error(f"DEBUG: Erro inesperado DENTRO do 'try' de sincronização: {e}")
+                # Força um erro 500 para vermos o log
+                raise HTTPException(status_code=500, detail=f"DEBUG: Erro na chamada de sync: {str(e)}")
         else:
-            logging.info(f"Sincronização Google desativada ou refresh_token ausente para {salao_id}. Pulando etapa de escrita no Google.")
-        # --- FIM DA LÓGICA DE ESCRITA HÍBRIDA ---
+            # <<< MUDANÇA CRÍTICA AQUI
+            logging.warning("DEBUG: Sincronização PULADA. 'google_sync_enabled' ou 'google_refresh_token' está faltando.")
+            # Força um erro 500 para vermos o log
+            raise HTTPException(status_code=500, detail="DEBUG: Sincronização PULADA. Checagem 'if' falhou.")
+        # --- FIM DA LÓGICA DE ESCRITA HÍBRIDA (MODO DE DEBUG) ---
 
         # 6. Retorna a resposta ao cliente final
+        # (Esta linha agora só será alcançada se google_success == True)
         return {"message": f"Agendamento para '{service_name}' criado com sucesso!"}
 
     except HTTPException as httpe: raise httpe
