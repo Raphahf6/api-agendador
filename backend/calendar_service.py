@@ -214,7 +214,7 @@ def create_google_event_with_oauth(
     """
     Cria um evento no Google Calendar do dono do salão usando OAuth2.
     """
-    # 1. Obtém o serviço de calendário (agora não precisa do 'readonly')
+    # 1. Obtém o serviço de calendário
     google_service = get_google_calendar_service(refresh_token)
     
     if not google_service:
@@ -222,12 +222,14 @@ def create_google_event_with_oauth(
         return False
 
     try:
-        # 2. Monta o corpo do evento (sem alterações)
+        # 2. Monta o corpo do evento
+        # <<< ALTERAÇÃO AQUI: Removidas as chaves 'timeZone'
+        # A string ISO (event_data['..._time_iso']) já contém o fuso.
         event_body = {
             'summary': event_data['summary'],
             'description': event_data['description'],
-            'start': {'dateTime': event_data['start_time_iso'], 'timeZone': LOCAL_TIMEZONE},
-            'end': {'dateTime': event_data['end_time_iso'], 'timeZone': LOCAL_TIMEZONE},
+            'start': {'dateTime': event_data['start_time_iso']},
+            'end': {'dateTime': event_data['end_time_iso']},
             'attendees': [],
             'reminders': {'useDefault': True},
         }
@@ -242,7 +244,7 @@ def create_google_event_with_oauth(
         return True
 
     except HttpError as e:
-        # Adiciona logging do erro HTTP específico
+        # Seu logging aqui está ótimo! Ele deve ter mostrado o erro 400.
         logging.error(f"Erro HttpError ao criar evento no Google Calendar (OAuth): {e.resp.status} - {e.content}")
         return False
     except Exception as e:
