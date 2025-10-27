@@ -6,7 +6,9 @@ import os
 
 # --- Importação Relativa Corrigida ---
 # Importa os modelos Pydantic do arquivo 'models.py' que está NA MESMA PASTA (core)
-from .models import ClientDetail, Service 
+# <<< CORREÇÃO (ImportError): Importações do topo removidas >>>
+# Elas serão feitas dentro das funções para evitar importação circular.
+# from .models import ClientDetail, Service 
 # --- Fim da Correção ---
 
 try:
@@ -56,7 +58,7 @@ def get_hairdresser_data_from_db(salao_id: str):
         services_stream = services_ref.stream()
         services_dict_with_ids = {doc.id: doc.to_dict() for doc in services_stream} # Guarda ID e dados
         
-        # --- A CORREÇÃO ESTÁ AQUI ---
+        # --- CORREÇÃO DA SINCRONIZAÇÃO (Bug do 'None') ---
         
         # 3. Adiciona os serviços ao dicionário COMPLETO
         hairdresser_data['servicos_data'] = services_dict_with_ids
@@ -69,3 +71,24 @@ def get_hairdresser_data_from_db(salao_id: str):
         logging.error(f"Erro ao buscar dados Firestore para {salao_id}: {e}")
         return None
 
+def get_all_clients_from_db():
+    """Busca todos os documentos da coleção 'cabeleireiros' (para Admin)."""
+    
+    # <<< CORREÇÃO DA IMPORTAÇÃO CIRCULAR (ImportError) >>>
+    # Importamos o ClientDetail DENTRO da função.
+    from .models import ClientDetail 
+    
+    if db is None:
+        logging.error("Firestore DB não está inicializado. get_all_clients_from_db falhou.")
+        return None
+    try:
+        clients_ref = db.collection('cabeleireiros').stream()
+        clients_list = []
+        for doc in clients_ref:
+            client_data = doc.to_dict()
+            # Usa o modelo Pydantic 'ClientDetail' importado
+            clients_list.append(ClientDetail(id=doc.id, servicos=[], **client_data))
+        return clients_list
+    except Exception as e: 
+        logging.error(f"Erro ao buscar todos os clientes: {e}")
+        return None
