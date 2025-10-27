@@ -22,16 +22,14 @@ WEEKDAY_MAP_DB = {
 }
 SLOT_INTERVAL_MINUTES = 15
 
-# --- NOVAS CONFIGURAÇÕES OAUTH ---
-# (Lê as variáveis de ambiente que você configurou no Render)
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET")
-# Pedimos 'readonly' pois só queremos *ler* os eventos pessoais para bloquear horários
-SCOPES = ['https://www.googleapis.com/auth/calendar.readonly'] 
-# --- FIM DA CONFIGURAÇÃO OAUTH ---
+# --- CORREÇÃO AQUI: Usar um único escopo para leitura e escrita ---
+SCOPES = ['https://www.googleapis.com/auth/calendar'] 
+# --- FIM DA CORREÇÃO ---
 
 
-# --- NOVA FUNÇÃO HELPER: Criar Serviço Google com OAuth ---
+# --- FUNÇÃO HELPER (SIMPLIFICADA): Criar Serviço Google com OAuth ---
 def get_google_calendar_service(refresh_token: str):
     """
     Cria um serviço (service) do Google Calendar autenticado 
@@ -42,27 +40,23 @@ def get_google_calendar_service(refresh_token: str):
         return None
     
     try:
-        # Cria as credenciais a partir do refresh_token salvo
         creds = Credentials.from_authorized_user_info(
             info={
                 "refresh_token": refresh_token,
                 "client_id": GOOGLE_CLIENT_ID,
                 "client_secret": GOOGLE_CLIENT_SECRET,
-                "token_uri": "https://oauth2.googleapis.com/token" # Padrão
+                "token_uri": "https://oauth2.googleapis.com/token" 
             },
-            scopes=SCOPES
+            scopes=SCOPES # Usa o escopo unificado
         )
-        
-        # O token pode estar expirado; o 'creds.refresh(None)' lidaria com isso,
-        # mas o 'build' geralmente força a atualização se necessário.
         
         service = build('calendar', 'v3', credentials=creds, cache_discovery=False)
         logging.info("Serviço Google Calendar (OAuth) inicializado com sucesso.")
         return service
         
     except Exception as e:
-        # Se o token for revogado pelo usuário, isto irá falhar
-        logging.error(f"Falha ao criar serviço Google Calendar com refresh_token: {e}")
+        # Adiciona logging mais detalhado
+        logging.exception(f"Falha CRÍTICA ao criar serviço Google Calendar com refresh_token: {e}")
         return None
 # --- FIM DA FUNÇÃO HELPER ---
 
@@ -212,6 +206,7 @@ def find_available_slots(
         logging.exception(f"Erro inesperado no cálculo de slots (Híbrido):")
         return []
     
+# --- Função de Escrita: Criar Evento no Google Calendar (CORRIGIDA) ---
 def create_google_event_with_oauth(
     refresh_token: str, 
     event_data: Dict[str, Any]
@@ -219,30 +214,22 @@ def create_google_event_with_oauth(
     """
     Cria um evento no Google Calendar do dono do salão usando OAuth2.
     """
-    # 1. Obtém o serviço de calendário com permissão de ESCRITA
-    google_service = get_google_calendar_service(refresh_token, readonly=False)
+    # 1. Obtém o serviço de calendário (agora não precisa do 'readonly')
+    google_service = get_google_calendar_service(refresh_token)
     
     if not google_service:
         logging.error("Não foi possível criar o serviço Google (OAuth) para escrita.")
         return False
 
     try:
-        # 2. Monta o corpo do evento para a API do Google
+        # 2. Monta o corpo do evento (sem alterações)
         event_body = {
             'summary': event_data['summary'],
             'description': event_data['description'],
-            'start': {
-                'dateTime': event_data['start_time_iso'],
-                'timeZone': LOCAL_TIMEZONE,
-            },
-            'end': {
-                'dateTime': event_data['end_time_iso'],
-                'timeZone': LOCAL_TIMEZONE,
-            },
-            'attendees': [], # O cliente não é convidado (para não enviar spam)
-            'reminders': {
-                'useDefault': True,
-            },
+            'start': {'dateTime': event_data['start_time_iso'], 'timeZone': LOCAL_TIMEZONE},
+            'end': {'dateTime': event_data['end_time_iso'], 'timeZone': LOCAL_TIMEZONE},
+            'attendees': [],
+            'reminders': {'useDefault': True},
         }
 
         # 3. Insere o evento
@@ -255,9 +242,10 @@ def create_google_event_with_oauth(
         return True
 
     except HttpError as e:
-        logging.error(f"Erro HttpError ao criar evento no Google Calendar (OAuth): {e}")
+        # Adiciona logging do erro HTTP específico
+        logging.error(f"Erro HttpError ao criar evento no Google Calendar (OAuth): {e.resp.status} - {e.content}")
         return False
     except Exception as e:
         logging.exception(f"Erro inesperado ao criar evento no Google Calendar (OAuth):")
         return False
-# --- FIM DA NOVA FUNÇÃO ---
+# --- FIM DA FUNÇÃO DE ESCRITA ---
