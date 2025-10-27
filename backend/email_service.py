@@ -4,14 +4,28 @@ import logging
 import resend # <<< Importa o módulo Resend
 from datetime import datetime
 from dotenv import load_dotenv
+
+# <<< ADICIONADO: Importa o 'ZoneInfo' para lidar com fusos horários
+# Este módulo é padrão do Python 3.9+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    # Fallback para Python < 3.9 (requer 'pip install pytz')
+    # Se estiver usando Python antigo, instale o pytz
+    try:
+        from pytz import timezone as ZoneInfo
+        logging.info("Usando 'pytz' como fallback para ZoneInfo.")
+    except ImportError:
+        logging.error("Nem 'zoneinfo' nem 'pytz' encontrados. A conversão de fuso horário falhará.")
+        # Define um 'falso' ZoneInfo para o código não quebrar, mas a conversão não funcionará
+        ZoneInfo = lambda x: None 
+
 load_dotenv()  # Carrega variáveis de ambiente do .env
 
 logging.basicConfig(level=logging.INFO)
 
 # --- Configuração do Resend no módulo ---
-# A biblioteca Resend procura automaticamente por RESEND_API_KEY no ambiente.
-# Se a chave for encontrada, o cliente estará pronto para uso.
-# Não é mais necessário instanciar a classe Resend().
+# ... (sem alterações aqui) ...
 
 def send_confirmation_email_to_salon(
     salon_email: str, 
@@ -25,16 +39,28 @@ def send_confirmation_email_to_salon(
     Envia um e-mail de confirmação para o salão sobre o novo agendamento.
     Retorna True em caso de sucesso, False em caso de falha.
     """
-    # Se a chave RESEND_API_KEY não estiver carregada, a chamada 'resend.Emails.send' falhará,
-    # mas não precisamos checar manualmente aqui, vamos direto para o try/except.
-        
+    
     # Formata a data para leitura (ex: 24 de Outubro de 2025 às 14:30)
     try:
-        start_time_dt = datetime.fromisoformat(start_time_iso)
-        # Formata para PT-BR
-        formatted_time = start_time_dt.strftime("%d/%m/%Y às %H:%M")
-    except ValueError:
-        formatted_time = start_time_iso 
+        # <<< ALTERADO: Lógica de conversão de fuso horário
+        
+        # 1. Define o fuso horário de destino (Onde o salão está)
+        # !!! IMPORTANTE: Ajuste se o fuso do salão não for este
+        TARGET_TZ = ZoneInfo("America/Sao_Paulo")
+
+        # 2. Converte a string ISO (que provavelmente está em UTC, ex: ...Z)
+        # para um objeto datetime 'aware' (consciente do fuso)
+        start_time_dt_aware = datetime.fromisoformat(start_time_iso)
+        
+        # 3. Converte o datetime para o fuso horário local de São Paulo
+        start_time_dt_local = start_time_dt_aware.astimezone(TARGET_TZ)
+        
+        # 4. Formata a hora local para PT-BR
+        formatted_time = start_time_dt_local.strftime("%d/%m/%Y às %H:%M")
+
+    except (ValueError, TypeError) as e:
+        logging.warning(f"Não foi possível converter o fuso horário da string: {start_time_iso}. Erro: {e}. Usando valor literal.")
+        formatted_time = start_time_iso # Fallback em caso de erro
 
     subject = f"✅ NOVO AGENDAMENTO para {salon_name}: {service_name} às {formatted_time}"
     
@@ -65,8 +91,7 @@ def send_confirmation_email_to_salon(
                 <strong>Serviço:</strong> {service_name}<br>
                 <strong>Cliente:</strong> {customer_name}<br>
                 <strong>Telefone:</strong> {client_phone}<br>
-                <strong>Data e Hora:</strong> {formatted_time}<br>
-                
+                <strong>Data e Hora:</strong> {formatted_time}<br> 
             </div>
             
             <p style="margin-top: 20px;">Lembre-se de checar sua agenda Horalis para todos os detalhes.</p>
