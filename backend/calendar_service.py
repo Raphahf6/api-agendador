@@ -1,9 +1,10 @@
-# backend/calendar_service.py (Versão Híbrida - Firestore + Google OAuth2)
+# backend/calendar_service.py (Versão Híbrida - COMPLETA)
 import logging
 import pytz
 import os
 from datetime import datetime, time, timedelta
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional # <<< 'Optional' foi adicionado
+
 from core.db import db # Firestore DB
 
 # --- NOVOS IMPORTS PARA GOOGLE OAUTH (Token de Refresh) ---
@@ -24,9 +25,7 @@ SLOT_INTERVAL_MINUTES = 15
 
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET")
-# --- CORREÇÃO AQUI: Usar um único escopo para leitura e escrita ---
 SCOPES = ['https://www.googleapis.com/auth/calendar'] 
-# --- FIM DA CORREÇÃO ---
 
 
 # --- FUNÇÃO HELPER (SIMPLIFICADA): Criar Serviço Google com OAuth ---
@@ -47,7 +46,7 @@ def get_google_calendar_service(refresh_token: str):
                 "client_secret": GOOGLE_CLIENT_SECRET,
                 "token_uri": "https://oauth2.googleapis.com/token" 
             },
-            scopes=SCOPES # Usa o escopo unificado
+            scopes=SCOPES 
         )
         
         service = build('calendar', 'v3', credentials=creds, cache_discovery=False)
@@ -55,16 +54,15 @@ def get_google_calendar_service(refresh_token: str):
         return service
         
     except Exception as e:
-        # Adiciona logging mais detalhado
         logging.exception(f"Falha CRÍTICA ao criar serviço Google Calendar com refresh_token: {e}")
         return None
 # --- FIM DA FUNÇÃO HELPER ---
 
 
-# --- Função find_available_slots (ATUALIZADA PARA HÍBRIDO) ---
+# --- Função find_available_slots (Sem alterações) ---
 def find_available_slots(
     salao_id: str, 
-    salon_data: dict, # Recebe o dict completo do salão
+    salon_data: dict, 
     service_duration_minutes: int, 
     date_str: str
 ) -> List[str]:
@@ -72,6 +70,7 @@ def find_available_slots(
     Encontra horários disponíveis lendo os agendamentos do FIRESTORE
     E (se ativado) os eventos do GOOGLE CALENDAR do dono do salão.
     """
+    # ... (Esta função longa permanece exatamente igual à sua versão anterior) ...
     if db is None: 
         logging.error("Firestore DB não está inicializado.")
         return []
@@ -132,8 +131,7 @@ def find_available_slots(
             logging.info(f"Encontrados {len(busy_periods)} agendamentos no Horalis (Firestore).")
         except Exception as e:
             logging.error(f"Erro ao buscar agendamentos do Firestore: {e}")
-            # Continua mesmo se o Firestore falhar, mas loga o erro
-        
+            
         # --- FONTE 2: GOOGLE CALENDAR (Eventos Pessoais) ---
         refresh_token = salon_data.get("google_refresh_token")
         if salon_data.get("google_sync_enabled") and refresh_token:
@@ -144,22 +142,19 @@ def find_available_slots(
             if google_service:
                 try:
                     events_result = google_service.events().list(
-                        calendarId='primary', # 'primary' refere-se ao calendário principal do usuário
-                        timeMin=day_start_dt.isoformat(), # ISO Format com Timezone
+                        calendarId='primary', 
+                        timeMin=day_start_dt.isoformat(), 
                         timeMax=day_end_dt.isoformat(),
                         singleEvents=True,
                         orderBy='startTime',
-                        timeZone=LOCAL_TIMEZONE # Garante que o Google use o nosso fuso
+                        timeZone=LOCAL_TIMEZONE
                     ).execute()
                     
                     google_events = events_result.get('items', [])
                     
                     for event in google_events:
-                        # Ignora eventos "Dia Inteiro" (que não têm 'dateTime')
                         start_str = event['start'].get('dateTime')
                         end_str = event['end'].get('dateTime')
-                        
-                        # Queremos apenas eventos "Ocupados" (não "Livres")
                         transparency = event.get('transparency') 
                         
                         if start_str and end_str and transparency != 'transparent':
@@ -170,9 +165,7 @@ def find_available_slots(
                     logging.info(f"Adicionados {len(google_events)} eventos do Google Calendar à lista de ocupados.")
                     
                 except HttpError as e:
-                    # Se o token for revogado, a API do Google retornará um erro (ex: 401)
                     logging.error(f"Erro na API Google Calendar (Token pode ter sido revogado): {e}")
-                    # TODO: No futuro, poderíamos definir 'google_sync_enabled = False' no Firestore aqui
                 except Exception as e:
                     logging.error(f"Erro inesperado ao processar eventos do Google: {e}")
         # --- FIM DA FONTE 2 ---
@@ -206,25 +199,24 @@ def find_available_slots(
         logging.exception(f"Erro inesperado no cálculo de slots (Híbrido):")
         return []
     
-# --- Função de Escrita: Criar Evento no Google Calendar (CORRIGIDA) ---
+
+# --- <<< MODIFICADO: Função de Escrita agora retorna o ID >>> ---
 def create_google_event_with_oauth(
     refresh_token: str, 
     event_data: Dict[str, Any]
-) -> bool:
+) -> Optional[str]: # <<< ALTERADO: Retorna string (ID) ou None
     """
     Cria um evento no Google Calendar do dono do salão usando OAuth2.
+    Retorna o ID do evento em caso de sucesso, ou None em caso de falha.
     """
-    # 1. Obtém o serviço de calendário
     google_service = get_google_calendar_service(refresh_token)
     
     if not google_service:
         logging.error("Não foi possível criar o serviço Google (OAuth) para escrita.")
-        return False
+        return None # <<< ALTERADO
 
     try:
-        # 2. Monta o corpo do evento
-        # <<< ALTERAÇÃO AQUI: Removidas as chaves 'timeZone'
-        # A string ISO (event_data['..._time_iso']) já contém o fuso.
+        # Relembrando: Removemos o 'timeZone' pois a string ISO já contém
         event_body = {
             'summary': event_data['summary'],
             'description': event_data['description'],
@@ -234,20 +226,86 @@ def create_google_event_with_oauth(
             'reminders': {'useDefault': True},
         }
 
-        # 3. Insere o evento
         event = google_service.events().insert(
             calendarId='primary', 
             body=event_body
         ).execute()
         
-        logging.info(f"Evento criado com sucesso no Google Calendar (OAuth). ID: {event.get('id')}")
-        return True
+        event_id = event.get('id')
+        logging.info(f"Evento criado com sucesso no Google Calendar (OAuth). ID: {event_id}")
+        return event_id # <<< ALTERADO: Retorna o ID
 
     except HttpError as e:
-        # Seu logging aqui está ótimo! Ele deve ter mostrado o erro 400.
         logging.error(f"Erro HttpError ao criar evento no Google Calendar (OAuth): {e.resp.status} - {e.content}")
-        return False
+        return None # <<< ALTERADO
     except Exception as e:
         logging.exception(f"Erro inesperado ao criar evento no Google Calendar (OAuth):")
+        return None # <<< ALTERADO
+# --- <<< FIM DA MODIFICAÇÃO >>> ---
+
+
+# --- <<< ADICIONADO: Nova função para DELETAR eventos >>> ---
+def delete_google_event(refresh_token: str, event_id: str) -> bool:
+    """Deleta um evento específico do Google Calendar usando seu ID."""
+    google_service = get_google_calendar_service(refresh_token)
+    if not google_service:
+        logging.error(f"Não foi possível criar serviço Google para DELETAR evento {event_id}")
         return False
-# --- FIM DA FUNÇÃO DE ESCRITA ---
+        
+    try:
+        google_service.events().delete(
+            calendarId='primary', 
+            eventId=event_id,
+            sendUpdates='all' # Notifica participantes (se houver)
+        ).execute()
+        logging.info(f"Evento {event_id} deletado com sucesso do Google Calendar.")
+        return True
+    except HttpError as e:
+        # Erro 410 "Gone" significa que o evento já foi deletado.
+        if e.resp.status == 410: 
+            logging.warning(f"Evento {event_id} já tinha sido deletado do Google Calendar (Erro 410).")
+            return True # Consideramos sucesso
+        logging.error(f"Erro HttpError ao DELETAR evento {event_id}: {e.content}")
+        return False
+    except Exception as e:
+        logging.exception(f"Erro inesperado ao DELETAR evento {event_id}:")
+        return False
+# --- <<< FIM DA ADIÇÃO >>> ---
+
+
+# --- <<< ADICIONADO: Nova função para ATUALIZAR (Reagendar) eventos >>> ---
+def update_google_event(
+    refresh_token: str, 
+    event_id: str, 
+    new_start_iso: str, 
+    new_end_iso: str
+) -> bool:
+    """Atualiza (Reagenda) a hora de início e fim de um evento no Google Calendar."""
+    google_service = get_google_calendar_service(refresh_token)
+    if not google_service:
+        logging.error(f"Não foi possível criar serviço Google para ATUALIZAR evento {event_id}")
+        return False
+        
+    try:
+        # Para o PATCH, enviamos apenas os campos que queremos mudar.
+        event_patch_body = {
+            'start': {'dateTime': new_start_iso},
+            'end': {'dateTime': new_end_iso},
+        }
+
+        google_service.events().patch(
+            calendarId='primary',
+            eventId=event_id,
+            body=event_patch_body,
+            sendUpdates='all' # Notifica participantes
+        ).execute()
+        
+        logging.info(f"Evento {event_id} ATUALIZADO com sucesso no Google Calendar.")
+        return True
+    except HttpError as e:
+        logging.error(f"Erro HttpError ao ATUALIZAR evento {event_id}: {e.content}")
+        return False
+    except Exception as e:
+        logging.exception(f"Erro inesperado ao ATUALIZAR evento {event_id}:")
+        return False
+# --- <<< FIM DA ADIÇÃO >>> ---

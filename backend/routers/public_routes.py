@@ -19,7 +19,7 @@ router = APIRouter(
 @router.get("/saloes/{salao_id}/servicos", response_model=SalonPublicDetails)
 def get_salon_services_and_details(salao_id: str):
     logging.info(f"Buscando detalhes/serviços para: {salao_id}")
-    salon_data = get_hairdresser_data_from_db(salao_id) # Usa a função de DB
+    salon_data = get_hairdresser_data_from_db(salao_id) 
     if not salon_data:
         raise HTTPException(status_code=404, detail="Salão não encontrado")
 
@@ -31,7 +31,7 @@ def get_salon_services_and_details(salao_id: str):
     response_data = SalonPublicDetails(servicos=services_list_formatted, **salon_data) 
     return response_data
 
-# --- Endpoint GET /saloes/{salao_id}/horarios-disponiveis (HÍBRIDO - Leitura) ---
+# --- Endpoint GET /saloes/{salao_id}/horarios-disponiveis (Sem alterações) ---
 @router.get("/saloes/{salao_id}/horarios-disponiveis")
 async def get_available_slots_endpoint( 
     salao_id: str,
@@ -50,10 +50,9 @@ async def get_available_slots_endpoint(
         duration = service_info.get('duracao_minutos')
         if duration is None: raise HTTPException(status_code=500, detail="Duração do serviço não encontrada.")
 
-        # --- CHAMADA DA FUNÇÃO HÍBRIDA (Leitura) ---
         available_slots = calendar_service.find_available_slots(
             salao_id=salao_id,
-            salon_data=salon_data, # Passa o dict 'salon_data' inteiro
+            salon_data=salon_data, 
             service_duration_minutes=duration,
             date_str=date
         )
@@ -63,7 +62,7 @@ async def get_available_slots_endpoint(
         logging.exception(f"Erro CRÍTICO no cálculo de slots (Híbrido):")
         raise HTTPException(status_code=500, detail="Erro interno ao calcular horários.")
 
-# --- Endpoint POST /agendamentos (HÍBRIDO - Escrita) ---
+# --- Endpoint POST /agendamentos (MODIFICADO) ---
 @router.post("/agendamentos", status_code=status.HTTP_201_CREATED)
 async def create_appointment(appointment: Appointment):
     """Cria um novo agendamento (público), SALVA NO FIRESTORE, envia e-mail,
@@ -78,9 +77,7 @@ async def create_appointment(appointment: Appointment):
 
     try:
         # 1. Validações e Busca de Dados
-        # <<< ESSA FUNÇÃO AGORA ESTÁ CORRIGIDA (NO core/db.py) >>>
         salon_data = get_hairdresser_data_from_db(salao_id) 
-        
         if not salon_data: raise HTTPException(status_code=404, detail="Salão não encontrado")
         
         service_info = salon_data.get("servicos_data", {}).get(service_id)
@@ -89,18 +86,17 @@ async def create_appointment(appointment: Appointment):
         duration = service_info.get('duracao_minutos')
         service_name = service_info.get('nome_servico')
         salon_name = salon_data.get('nome_salao')
-        # Usamos o 'calendar_id' como o e-mail de destino do Resend
         salon_email_destino = salon_data.get('calendar_id') 
 
         if duration is None or service_name is None or not salon_email_destino:
             raise HTTPException(status_code=500, detail="Dados do serviço ou e-mail de destino incompletos.")
 
-        # 2. Validação do telefone
+        # 2. Validação do telefone (Sem alteração)
         cleaned_phone = re.sub(r'\D', '', user_phone)
         if not (10 <= len(cleaned_phone) <= 11):
              raise HTTPException(status_code=400, detail="Formato de telefone inválido.")
 
-        # 3. LÓGICA DE SALVAMENTO NO FIRESTORE (Fonte da Verdade)
+        # 3. LÓGICA DE SALVAMENTO NO FIRESTORE (Sem alteração)
         start_time_dt = datetime.fromisoformat(start_time_str)
         end_time_dt = start_time_dt + timedelta(minutes=duration)
         
@@ -115,7 +111,7 @@ async def create_appointment(appointment: Appointment):
         agendamento_ref.set(agendamento_data)
         logging.info(f"Agendamento salvo no Firestore com ID: {agendamento_ref.id}")
 
-        # 4. DISPARO DO E-MAIL (Resend)
+        # 4. DISPARO DO E-MAIL (Sem alteração)
         try:
             email_success = email_service.send_confirmation_email_to_salon(
                 salon_email=salon_email_destino, 
@@ -133,9 +129,8 @@ async def create_appointment(appointment: Appointment):
             logging.error(f"Erro CRÍTICO ao disparar e-mail Resend: {e}")
             # Não quebra o agendamento, apenas loga.
 
-        # 5. --- LÓGICA DE ESCRITA HÍBRIDA (Versão Final "Silenciosa") ---
+        # 5. --- <<< MODIFICADO: LÓGICA DE ESCRITA HÍBRIDA (COM SALVAMENTO DO ID) >>> ---
         
-        # Formata os dados do evento para a função do Google
         google_event_data = {
             "summary": f"{service_name} - {user_name}",
             "description": f"Agendamento via Horalis.\nCliente: {user_name}\nTelefone: {user_phone}\nServiço: {service_name}",
@@ -143,27 +138,34 @@ async def create_appointment(appointment: Appointment):
             "end_time_iso": end_time_dt.isoformat(),
         }
 
-        # <<< AGORA ESSE 'IF' VAI FUNCIONAR >>>
-        # (Porque 'salon_data' está completo graças à correção no core/db.py)
         if salon_data.get("google_sync_enabled") and salon_data.get("google_refresh_token"):
             logging.info(f"Sincronização Google Ativa para {salao_id}. Tentando salvar no Google Calendar.")
             
             try:
-                # Chama a função de escrita OAuth do calendar_service
-                google_success = calendar_service.create_google_event_with_oauth(
+                # <<< ALTERADO: Captura o ID retornado >>>
+                google_event_id = calendar_service.create_google_event_with_oauth(
                     refresh_token=salon_data.get("google_refresh_token"),
                     event_data=google_event_data
                 )
-                if google_success:
-                    logging.info("Agendamento salvo com sucesso no Google Calendar (OAuth).")
+                
+                # <<< ALTERADO: Verifica se o ID veio >>>
+                if google_event_id:
+                    logging.info(f"Agendamento salvo com sucesso no Google Calendar (ID: {google_event_id}).")
+                    
+                    # <<< ADICIONADO: Salva o ID de volta no Firestore >>>
+                    try:
+                        agendamento_ref.update({"googleEventId": google_event_id})
+                        logging.info(f"ID do Google Event salvo no Firestore: {google_event_id}")
+                    except Exception as e:
+                        logging.error(f"Falha ao salvar googleEventId no Firestore: {e}")
+                        
                 else:
-                    logging.warning("Falha ao salvar no Google Calendar (OAuth) (função retornou False).")
+                    logging.warning("Falha ao salvar no Google Calendar (OAuth) (função retornou None).")
             except Exception as e:
-                # Pega exceções da chamada de sincronização sem quebrar o agendamento
                 logging.error(f"Erro inesperado ao tentar salvar no Google Calendar: {e}")
         else:
             logging.info(f"Sincronização Google desativada ou refresh_token ausente para {salao_id}. Pulando etapa de escrita no Google.")
-        # --- FIM DA LÓGICA DE ESCRITA HÍBRIDA ---
+        # --- <<< FIM DA MODIFICAÇÃO >>> ---
 
         # 6. Retorna a resposta ao cliente final
         return {"message": f"Agendamento para '{service_name}' criado com sucesso!"}
