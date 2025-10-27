@@ -138,17 +138,33 @@ async def create_appointment(appointment: Appointment):
         google_event_data = {
             "summary": f"{service_name} - {user_name}",
             "description": f"Agendamento via Horalis.\nCliente: {user_name}\nTelefone: {user_phone}\nServiço: {service_name}",
-            "start_time_iso": start_time_dt.isoformat(), # Usa o datetime (agora string ISO)
+            "start_time_iso": start_time_dt.isoformat(), 
             "end_time_iso": end_time_dt.isoformat(),
         }
+
+        # --- NOVO BLOCO DE DEBUG: IMPRIMIR OS VALORES ---
+        try:
+            sync_enabled_val = salon_data.get("google_sync_enabled")
+            token_val = salon_data.get("google_refresh_token")
+            
+            logging.error("--- VERIFICAÇÃO DE DEBUG ANTES DO IF ---")
+            logging.error(f"DEBUG: Valor lido para 'google_sync_enabled': {sync_enabled_val}")
+            logging.error(f"DEBUG: Tipo do valor 'google_sync_enabled': {type(sync_enabled_val)}")
+            logging.error(f"DEBUG: Token (primeiros 10 chars): {str(token_val)[:10]}...")
+            logging.error("-------------------------------------------")
+
+        except Exception as e:
+            logging.error(f"DEBUG: Erro ao tentar logar os dados: {e}")
+        # --- FIM DO NOVO BLOCO DE DEBUG ---
+        
+
+        # Verifica se a sincronização está ativa E se temos um token
         if salon_data.get("google_sync_enabled") and salon_data.get("google_refresh_token"):
             logging.info(f"DEBUG: Sincronização ATIVA. Refresh token encontrado.")
             
             try:
-                # Pega o refresh token para logar
                 debug_token = salon_data.get("google_refresh_token")
-                logging.info(f"DEBUG: Token a ser usado (primeiros 10 chars): {debug_token[:10]}...")
-
+                # ... (o resto do 'try' continua igual) ...
                 google_success = calendar_service.create_google_event_with_oauth(
                     refresh_token=debug_token,
                     event_data=google_event_data
@@ -157,25 +173,18 @@ async def create_appointment(appointment: Appointment):
                 if google_success:
                     logging.info("Agendamento salvo com sucesso no Google Calendar (OAuth).")
                 else:
-                    # <<< MUDANÇA CRÍTICA AQUI
                     logging.error("DEBUG: A função create_google_event_with_oauth retornou 'False'.")
-                    # Força um erro 500 para vermos o log
                     raise HTTPException(status_code=500, detail="DEBUG: create_google_event_with_oauth retornou 'False'.")
             
             except Exception as e:
-                # <<< MUDANÇA CRÍTICA AQUI
                 logging.error(f"DEBUG: Erro inesperado DENTRO do 'try' de sincronização: {e}")
-                # Força um erro 500 para vermos o log
                 raise HTTPException(status_code=500, detail=f"DEBUG: Erro na chamada de sync: {str(e)}")
         else:
-            # <<< MUDANÇA CRÍTICA AQUI
             logging.warning("DEBUG: Sincronização PULADA. 'google_sync_enabled' ou 'google_refresh_token' está faltando.")
-            # Força um erro 500 para vermos o log
             raise HTTPException(status_code=500, detail="DEBUG: Sincronização PULADA. Checagem 'if' falhou.")
-        # --- FIM DA LÓGICA DE ESCRITA HÍBRIDA (MODO DE DEBUG) ---
+        # --- FIM DA LÓGICA DE ESCRITA HÍBRIDA (MODO DE DEBUG V2) ---
 
         # 6. Retorna a resposta ao cliente final
-        # (Esta linha agora só será alcançada se google_success == True)
         return {"message": f"Agendamento para '{service_name}' criado com sucesso!"}
 
     except HTTPException as httpe: raise httpe
