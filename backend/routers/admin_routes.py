@@ -6,7 +6,7 @@ import re
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import RedirectResponse # MANTIDO para o /callback
 from firebase_admin import firestore
-from typing import List, Optional, dict, Any
+from typing import List, Optional, Any
 from datetime import datetime, timedelta
 from pydantic import BaseModel, Field 
 # --- NOVOS IMPORTS PARA GOOGLE OAUTH ---
