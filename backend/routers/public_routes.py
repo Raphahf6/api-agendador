@@ -94,10 +94,17 @@ async def create_appointment(appointment: Appointment):
         start_time_dt = datetime.fromisoformat(start_time_str)
         end_time_dt = start_time_dt + timedelta(minutes=duration)
         agendamento_data = {
-            "salaoId": salao_id, "serviceId": service_id, "serviceName": service_name,
-            "durationMinutes": duration, "startTime": start_time_dt, "endTime": end_time_dt,
-            "customerName": user_name, "customerEmail": user_email, "customerPhone": user_phone,
-            "status": "confirmado", "createdAt": firestore.SERVER_TIMESTAMP, "reminderSent": False
+            # ... (outros campos: salaoId, serviceId, serviceName) ...
+            "salonName": salon_name, # <<< ADICIONADO: Salva o nome do salão
+            "customerName": user_name,
+            "customerEmail": user_email, 
+            "customerPhone": user_phone,
+            "startTime": start_time_dt, # <<< MOVIDO PARA CONSISTÊNCIA
+            "endTime": end_time_dt,     # <<< MOVIDO PARA CONSISTÊNCIA
+            "durationMinutes": duration, # <<< MOVIDO PARA CONSISTÊNCIA
+            "status": "confirmado", 
+            "createdAt": firestore.SERVER_TIMESTAMP,
+            "reminderSent": False 
         }
         agendamento_ref = db.collection('cabeleireiros').document(salao_id).collection('agendamentos').document()
         agendamento_ref.set(agendamento_data)

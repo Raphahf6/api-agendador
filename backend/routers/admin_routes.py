@@ -192,27 +192,30 @@ async def create_manual_appointment(
     logging.info(f"Admin {user_email} criando agendamento manual para {salao_id}")
     
     try:
+        # <<< ADICIONADO: Busca dados do salão para pegar o nome >>>
+        salon_data = get_hairdresser_data_from_db(salao_id)
+        salon_name = salon_data.get("nome_salao", "Seu Salão") # Pega o nome ou usa um padrão
+
         start_time_dt = datetime.fromisoformat(manual_data.start_time)
         end_time_dt = start_time_dt + timedelta(minutes=manual_data.duration_minutes)
         
         agendamento_data = {
             "salaoId": salao_id,
+            "salonName": salon_name, # <<< ADICIONADO: Salva o nome do salão
             "serviceName": manual_data.service_name,
             "durationMinutes": manual_data.duration_minutes,
             "startTime": start_time_dt,
             "endTime": end_time_dt,
             "customerName": manual_data.customer_name,
             "customerPhone": manual_data.customer_phone or "N/A",
-            # "customerEmail" não é coletado por este formulário (ainda)
             "status": "manual", 
             "createdBy": user_email, 
             "createdAt": firestore.SERVER_TIMESTAMP,
             "reminderSent": False
         }
         
-        agendamento_ref = db.collection('cabeleireiros').document(salao_id).collection('agendamentos').document()
+        agendamento_ref = db.collection('cabeleireiros').document(manual_data.salao_id).collection('agendamentos').document()
         agendamento_ref.set(agendamento_data)
-        logging.info(f"Agendamento manual criado no Firestore com ID: {agendamento_ref.id}")
 
         # Sincronização Google (sem alteração)
         salon_data = get_hairdresser_data_from_db(salao_id)
