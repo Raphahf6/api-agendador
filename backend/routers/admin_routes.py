@@ -2,34 +2,31 @@
 import logging
 import os
 import re
+import pytz # <<< ADICIONADO (para o fuso do reagendamento)
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from fastapi.responses import RedirectResponse # MANTIDO para o /callback
+from fastapi.responses import RedirectResponse 
 from firebase_admin import firestore
 from typing import List, Optional, Any
 from datetime import datetime, timedelta
 from pydantic import BaseModel, Field 
-# --- NOVOS IMPORTS PARA GOOGLE OAUTH ---
 from google_auth_oauthlib.flow import Flow
-# --- FIM DOS NOVOS IMPORTS ---
-import pytz
 
 # Importações dos nossos módulos refatorados
 from core.models import ClientDetail, NewClientData, Service
 from core.auth import get_current_user 
 from core.db import get_all_clients_from_db, get_hairdresser_data_from_db, db
-import calendar_service # <<< ADICIONADO >>>
+import calendar_service 
+import email_service # <<< AGORA VAMOS USAR AS NOVAS FUNÇÕES
 
 # --- Configuração do Roteador Admin ---
 router = APIRouter(
-    prefix="/admin", # Todas as rotas aqui começarão com /admin
-    tags=["Admin"], # Agrupa na documentação do /docs
-    dependencies=[Depends(get_current_user)] # Proteção GLOBAL para /admin
+    prefix="/admin",
+    tags=["Admin"],
+    dependencies=[Depends(get_current_user)] 
 )
-
 callback_router = APIRouter(
     prefix="/admin", 
     tags=["Admin - OAuth Callback"],
-    # SEM 'dependencies'
 )
 
 # ... (Constantes GOOGLE_CLIENT_ID, SCOPES, REDIRECT_URI, etc. - Sem alteração) ...
@@ -40,7 +37,7 @@ RENDER_API_URL = "https://api-agendador.onrender.com"
 REDIRECT_URI = f"{RENDER_API_URL}/api/v1/admin/google/auth/callback"
 
 
-# --- Modelos Pydantic (Sem alteração nos seus, apenas adição) ---
+# --- Modelos Pydantic (Sem alteração) ---
 class CalendarEvent(BaseModel):
     id: str
     title: str
@@ -52,26 +49,23 @@ class CalendarEvent(BaseModel):
     
 class ManualAppointmentData(BaseModel):
     salao_id: str
-    start_time: str # ISO string
+    start_time: str 
     duration_minutes: int
     customer_name: str = Field(..., min_length=2)
     customer_phone: Optional[str] = None
     service_name: str = Field(..., min_length=3)
     
-# <<< ADICIONADO: Modelo para o corpo (body) do Reagendamento >>>
 class ReagendamentoBody(BaseModel):
-    new_start_time: str # Espera uma string ISO (ex: "2025-10-27T14:00:00-03:00")
+    new_start_time: str 
     
     
 # --- ENDPOINTS OAUTH (Sem alterações) ---
-
 @router.get("/google/auth/start", response_model=dict[str, str])
 async def google_auth_start(current_user: dict[str, Any] = Depends(get_current_user)):
-    # ... (Seu código aqui - Sem alteração) ...
+    # ... (código sem alteração) ...
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
         logging.error("Credenciais OAuth do Google não configuradas no ambiente.")
         raise HTTPException(status_code=500, detail="Integração com Google não configurada.")
-    
     client_config = {
         "web": {
             "client_id": GOOGLE_CLIENT_ID,
@@ -80,41 +74,33 @@ async def google_auth_start(current_user: dict[str, Any] = Depends(get_current_u
             "token_uri": "https://oauth2.googleapis.com/token"
         }
     }
-    
     flow = Flow.from_client_config(
         client_config=client_config, 
         scopes=SCOPES,
         redirect_uri=REDIRECT_URI
     )
-    
     authorization_url, state = flow.authorization_url(
         access_type='offline',
         prompt='consent', 
-        state=current_user.get("uid") # Passa o UID do Firebase para o próximo passo
+        state=current_user.get("uid") 
     )
-    
     logging.info(f"Enviando URL de autorização do Google para o usuário {current_user.get('email')}...")
-    
     return {"authorization_url": authorization_url}
 
 @router.get("/user/salao-id", response_model=dict[str, str])
 async def get_salao_id_for_user(current_user: dict[str, Any] = Depends(get_current_user)):
-    # ... (Seu código aqui - Sem alteração) ...
+    # ... (código sem alteração) ...
     user_uid = current_user.get("uid")
     logging.info(f"Admin (UID: {user_uid}) solicitou ID do salão.")
-    
     try:
         clients_ref = db.collection('cabeleireiros')
         query = clients_ref.where('ownerUID', '==', user_uid).limit(1) 
         client_doc_list = list(query.stream()) 
-        
         if not client_doc_list:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, 
                                 detail="Nenhum salão encontrado para esta conta de usuário.")
-                    
         salao_id = client_doc_list[0].id 
         return {"salao_id": salao_id}
-        
     except HTTPException as httpe:
         raise httpe
     except Exception as e:
@@ -122,10 +108,9 @@ async def get_salao_id_for_user(current_user: dict[str, Any] = Depends(get_curre
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno ao buscar o ID do salão.")
 
 # --- Endpoints CRUD de Clientes (Sem alterações) ---
-
 @router.get("/clientes", response_model=List[ClientDetail])
 async def list_clients(current_user: dict = Depends(get_current_user)):
-    # ... (Seu código aqui - Sem alteração) ...
+    # ... (código sem alteração) ...
     logging.info(f"Admin {current_user.get('email')} solicitou lista de clientes.")
     clients = get_all_clients_from_db()
     if clients is None: raise HTTPException(status_code=500, detail="Erro ao buscar clientes.")
@@ -133,7 +118,7 @@ async def list_clients(current_user: dict = Depends(get_current_user)):
 
 @router.get("/clientes/{client_id}", response_model=ClientDetail)
 async def get_client_details(client_id: str, current_user: dict = Depends(get_current_user)):
-    # ... (Seu código aqui - Sem alteração) ...
+    # ... (código sem alteração) ...
     admin_email = current_user.get("email"); logging.info(f"Admin {admin_email} detalhes cliente: {client_id}")
     try:
         client_ref = db.collection('cabeleireiros').document(client_id); client_doc = client_ref.get()
@@ -147,26 +132,20 @@ async def get_client_details(client_id: str, current_user: dict = Depends(get_cu
 
 @router.post("/clientes", response_model=ClientDetail, status_code=status.HTTP_201_CREATED)
 async def create_client(client_data: NewClientData, current_user: dict = Depends(get_current_user)):
-    # ... (Seu código aqui - Sem alteração) ...
+    # ... (código sem alteração) ...
     admin_email = current_user.get("email")
     user_uid = current_user.get("uid")
     logging.info(f"Admin {admin_email} (UID: {user_uid}) criando: {client_data.nome_salao}")
     client_id = client_data.numero_whatsapp
-    
     try:
         client_ref = db.collection('cabeleireiros').document(client_id)
         if client_ref.get().exists: 
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Cliente {client_id} já existe.")
-        
         data_to_save = client_data.dict() 
-        
         data_to_save['ownerUID'] = user_uid 
-        
         client_ref.set(data_to_save)
         logging.info(f"Cliente '{data_to_save['nome_salao']}' (Dono: {user_uid}) criado ID: {client_id}")
-        
         return ClientDetail(id=client_id, servicos=[], **data_to_save)
-        
     except HTTPException as httpe: raise httpe
     except Exception as e:
         logging.exception(f"Erro ao criar cliente:");
@@ -174,50 +153,42 @@ async def create_client(client_data: NewClientData, current_user: dict = Depends
 
 @router.put("/clientes/{client_id}", response_model=ClientDetail)
 async def update_client(client_id: str, client_update_data: ClientDetail, current_user: dict = Depends(get_current_user)):
-    # ... (Seu código aqui - Sem alteração) ...
+    # ... (código sem alteração) ...
     admin_email = current_user.get("email"); logging.info(f"Admin {admin_email} atualizando: {client_id}")
     if client_id != client_update_data.id: raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="ID URL não corresponde aos dados.")
     try:
         client_ref = db.collection('cabeleireiros').document(client_id)
         if not client_ref.get(retry=None, timeout=None).exists: raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cliente não encontrado.")
-        
         client_info = client_update_data.dict(exclude={'servicos', 'id'}, exclude_unset=True)
         updated_services = client_update_data.servicos
-
         @firestore.transactional
         def update_in_transaction(transaction, client_ref, client_info_to_save, services_to_save):
             services_ref = client_ref.collection('servicos')
             old_services_refs = [doc.reference for doc in services_ref.stream(transaction=transaction)]
-            transaction.update(client_ref, client_info_to_save) # Usa UPDATE
+            transaction.update(client_ref, client_info_to_save)
             for old_ref in old_services_refs: transaction.delete(old_ref)
             for service_data in services_to_save:
                 new_service_ref = services_ref.document()
                 service_dict = service_data.dict(exclude={'id'}, exclude_unset=True, exclude_none=True)
                 transaction.set(new_service_ref, service_dict)
-
         transaction = db.transaction()
         update_in_transaction(transaction, client_ref, client_info, updated_services)
         logging.info(f"Cliente '{client_update_data.nome_salao}' atualizado.")
-        
         updated_details = await get_client_details(client_id, current_user)
         return updated_details
-        
     except HTTPException as httpe: raise httpe
     except Exception as e: logging.exception(f"Erro CRÍTICO ao atualizar cliente {client_id}:"); raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno.")
 
 
-# --- <<< MODIFICADO: Agendamento Manual agora Sincroniza com Google >>> ---
+# --- Agendamento Manual (Sem alteração) ---
 @router.post("/calendario/agendar", status_code=status.HTTP_201_CREATED)
 async def create_manual_appointment(
     manual_data: ManualAppointmentData,
     current_user: dict[str, Any] = Depends(get_current_user)
 ):
-    """
-    Endpoint protegido para o dono do salão adicionar um agendamento manualmente.
-    Salva no Firestore E SINCRONIZA com Google Calendar (se ativo).
-    """
+    # ... (código sem alteração, exceto pela adição do logging sobre o e-mail) ...
     user_email = current_user.get("email")
-    salao_id = manual_data.salao_id # <<< Pega o salao_id
+    salao_id = manual_data.salao_id 
     logging.info(f"Admin {user_email} criando agendamento manual para {salao_id}")
     
     try:
@@ -232,6 +203,7 @@ async def create_manual_appointment(
             "endTime": end_time_dt,
             "customerName": manual_data.customer_name,
             "customerPhone": manual_data.customer_phone or "N/A",
+            # "customerEmail" não é coletado por este formulário (ainda)
             "status": "manual", 
             "createdBy": user_email, 
             "createdAt": firestore.SERVER_TIMESTAMP 
@@ -241,18 +213,16 @@ async def create_manual_appointment(
         agendamento_ref.set(agendamento_data)
         logging.info(f"Agendamento manual criado no Firestore com ID: {agendamento_ref.id}")
 
-        # --- <<< ADICIONADO: Lógica de Sincronização Google >>> ---
+        # Sincronização Google (sem alteração)
         salon_data = get_hairdresser_data_from_db(salao_id)
         if salon_data.get("google_sync_enabled") and salon_data.get("google_refresh_token"):
             logging.info("Sincronização Google Ativa para agendamento manual.")
-            
             google_event_data = {
                 "summary": f"{manual_data.service_name} - {manual_data.customer_name}",
                 "description": f"Agendamento via Horalis (Manual).\nCliente: {manual_data.customer_name}\nTelefone: {manual_data.customer_phone}\nServiço: {manual_data.service_name}",
                 "start_time_iso": start_time_dt.isoformat(),
                 "end_time_iso": end_time_dt.isoformat(),
             }
-            
             try:
                 google_event_id = calendar_service.create_google_event_with_oauth(
                     refresh_token=salon_data.get("google_refresh_token"),
@@ -267,66 +237,64 @@ async def create_manual_appointment(
                 logging.error(f"Erro ao salvar agendamento manual no Google Calendar: {e}")
         else:
             logging.info("Sincronização Google desativada. Pulando etapa para agendamento manual.")
-        # --- <<< FIM DA ADIÇÃO >>> ---
+        
+        # <<< ADICIONADO: Log de aviso sobre e-mail manual >>>
+        logging.info("Agendamento manual criado. E-mail de confirmação (Cliente) não enviado (e-mail não coletado neste formulário).")
         
         return {"message": "Agendamento manual criado com sucesso!", "id": agendamento_ref.id}
 
     except Exception as e:
         logging.exception(f"Erro CRÍTICO ao criar agendamento manual:")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno ao criar agendamento manual.")
-# --- <<< FIM DA MODIFICAÇÃO >>> ---
 
 
 # --- Endpoint de Leitura do Calendário (Sem alterações) ---
 @router.get("/calendario/{salao_id}/eventos", response_model=List[CalendarEvent])
 async def get_calendar_events(
     salao_id: str, 
-    start: str, # FullCalendar envia ?start=...&end=...
+    start: str, 
     end: str,
     current_user: dict = Depends(get_current_user)
 ):
-    # ... (Seu código aqui - Sem alteração) ...
+    # ... (código sem alteração) ...
     admin_email = current_user.get("email")
     logging.info(f"Admin {admin_email} buscando eventos para {salao_id} de {start} a {end}")
-    
     try:
         start_dt_utc = datetime.fromisoformat(start)
         end_dt_utc = datetime.fromisoformat(end)
-
         agendamentos_ref = db.collection('cabeleireiros').document(salao_id).collection('agendamentos')
-        
         query = agendamentos_ref.where("startTime", ">=", start_dt_utc).where("startTime", "<=", end_dt_utc)
         docs = query.stream()
-
         eventos = []
         for doc in docs:
             data = doc.to_dict()
-            
+            startTime = data.get('startTime')
+            endTime = data.get('endTime')
+            if not startTime or not endTime: continue
+                
             evento_formatado = CalendarEvent(
                 id=doc.id,
                 title=f"{data.get('serviceName', 'Serviço')} - {data.get('customerName', 'Cliente')}",
-                start=data['startTime'], 
-                end=data['endTime'],
+                start=startTime, 
+                end=endTime,
                 extendedProps={ 
                     "customerName": data.get('customerName'),
                     "customerPhone": data.get('customerPhone'),
+                    "customerEmail": data.get('customerEmail'), # <<< ADICIONADO (para debug)
                     "serviceName": data.get('serviceName'),
-                    # <<< ADICIONADO: Envia o googleEventId para o modal no frontend >>>
+                    "durationMinutes": data.get('durationMinutes'),
                     "googleEventId": data.get("googleEventId") 
                 }
             )
             eventos.append(evento_formatado)
-        
         logging.info(f"Retornando {len(eventos)} eventos para o FullCalendar.")
         return eventos
-
     except Exception as e:
         logging.exception(f"Erro ao buscar eventos do calendário para {salao_id}:")
         raise HTTPException(status_code=500, detail="Erro interno ao buscar eventos.")
 
 
-# --- <<< ADICIONADO: NOVOS ENDPOINTS DE CANCELAR E REAGENDAR >>> ---
-
+# --- <<< MODIFICADO: Endpoint de Cancelar Agendamento >>> ---
 @router.delete("/calendario/{salao_id}/agendamentos/{agendamento_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def cancel_appointment(
     salao_id: str, 
@@ -334,7 +302,7 @@ async def cancel_appointment(
     current_user: dict = Depends(get_current_user)
 ):
     """
-    Cancela um agendamento (Deleta do Firestore e do Google Calendar)
+    Cancela um agendamento (Deleta do Firestore, Google Calendar E NOTIFICA O CLIENTE)
     """
     logging.info(f"Admin {current_user.get('email')} cancelando agendamento: {agendamento_id}")
     
@@ -345,23 +313,48 @@ async def cancel_appointment(
         if not agendamento_doc.exists:
             raise HTTPException(status_code=404, detail="Agendamento não encontrado")
         
+        # <<< ADICIONADO: Coleta de dados para o e-mail >>>
         agendamento_data = agendamento_doc.to_dict()
         google_event_id = agendamento_data.get("googleEventId")
+        customer_email = agendamento_data.get("customerEmail")
+        customer_name = agendamento_data.get("customerName")
+        service_name = agendamento_data.get("serviceName")
+        start_time_dt = agendamento_data.get("startTime") # Pega como datetime
+        
+        # Pega o nome do salão (necessário para o e-mail)
+        salon_data = get_hairdresser_data_from_db(salao_id)
+        salon_name = salon_data.get("nome_salao", "seu salão")
 
-        # 1. Sincronização: Deletar do Google Calendar (se existir)
+        # 1. Sincronização: Deletar do Google Calendar (Sem alteração)
         if google_event_id:
-            salon_data = get_hairdresser_data_from_db(salao_id)
             refresh_token = salon_data.get("google_refresh_token")
             if refresh_token:
                 logging.info(f"Tentando deletar evento do Google Calendar: {google_event_id}")
-                # Chamada assíncrona (não bloqueia)
                 calendar_service.delete_google_event(refresh_token, google_event_id)
             else:
                 logging.warning(f"Não foi possível deletar {google_event_id} do Google. Refresh token não encontrado.")
         
-        # 2. Deletar do Firestore
+        # 2. Deletar do Firestore (Sem alteração)
         agendamento_ref.delete()
         logging.info(f"Agendamento {agendamento_id} deletado do Firestore.")
+        
+        # --- <<< ADICIONADO: Notificação por E-mail (Cliente) >>> ---
+        if customer_email and customer_name and service_name and start_time_dt and salon_name:
+            try:
+                logging.info(f"Enviando e-mail de cancelamento para {customer_email}...")
+                email_service.send_cancellation_email_to_customer(
+                    customer_email=customer_email,
+                    customer_name=customer_name,
+                    service_name=service_name,
+                    start_time_iso=start_time_dt.isoformat(), # Converte datetime para ISO string
+                    salon_name=salon_name
+                )
+            except Exception as e:
+                # Não quebra a operação se o e-mail falhar, apenas loga
+                logging.error(f"Falha ao enviar e-mail de CANCELAMENTO (Cliente) para {customer_email}: {e}")
+        else:
+            logging.warning(f"Pulando e-mail de cancelamento (dados incompletos) para agendamento {agendamento_id}")
+        # --- <<< FIM DA ADIÇÃO >>> ---
         
         return # Retorna 204 No Content
 
@@ -370,6 +363,7 @@ async def cancel_appointment(
         raise HTTPException(status_code=500, detail=f"Erro interno: {e}")
 
 
+# --- <<< MODIFICADO: Endpoint de Reagendar Agendamento >>> ---
 @router.patch("/calendario/{salao_id}/agendamentos/{agendamento_id}")
 async def reschedule_appointment(
     salao_id: str, 
@@ -378,8 +372,8 @@ async def reschedule_appointment(
     current_user: dict = Depends(get_current_user)
 ):
     """
-    Reagenda um agendamento.
-    AGORA VERIFICA CONFLITOS antes de salvar.
+    Reagenda um agendamento (Verifica conflitos, Atualiza Firestore, 
+    Atualiza Google Calendar E NOTIFICA O CLIENTE)
     """
     logging.info(f"Admin {current_user.get('email')} tentando reagendar {agendamento_id} para {body.new_start_time}")
     
@@ -390,94 +384,100 @@ async def reschedule_appointment(
         if not agendamento_doc.exists:
             raise HTTPException(status_code=404, detail="Agendamento não encontrado")
         
+        # <<< ADICIONADO: Coleta de dados para o e-mail >>>
         agendamento_data = agendamento_doc.to_dict()
         google_event_id = agendamento_data.get("googleEventId")
         duration = agendamento_data.get("durationMinutes")
+        customer_email = agendamento_data.get("customerEmail")
+        customer_name = agendamento_data.get("customerName")
+        service_name = agendamento_data.get("serviceName")
+        old_start_time_dt = agendamento_data.get("startTime") # Horário antigo
         
-        # <<< ADICIONADO: Pega dados do salão para o verificador >>>
         salon_data = get_hairdresser_data_from_db(salao_id)
+        salon_name = salon_data.get("nome_salao", "seu salão")
 
-        if not duration:
-            raise HTTPException(status_code=500, detail="Agendamento não possui duração definida.")
-        if not salon_data:
-             raise HTTPException(status_code=404, detail="Dados do salão não encontrados.")
+        if not duration or not salon_data or not old_start_time_dt:
+             raise HTTPException(status_code=500, detail="Dados do agendamento ou salão estão incompletos.")
 
-        # Calcular novos horários
+        # Calcular novos horários (Sem alteração)
         new_start_dt = datetime.fromisoformat(body.new_start_time)
-        
-        # <<< ADICIONADO: Garante que a data/hora tenha fuso horário local >>>
-        # (Se a string ISO do frontend já tiver fuso, isso se ajusta. 
-        # Se não tiver, assume o fuso local)
         local_tz = pytz.timezone(calendar_service.LOCAL_TIMEZONE)
         if new_start_dt.tzinfo is None:
              new_start_dt = local_tz.localize(new_start_dt)
         else:
              new_start_dt = new_start_dt.astimezone(local_tz)
-        
         new_end_dt = new_start_dt + timedelta(minutes=duration)
         
-        # --- <<< ADICIONADO: VERIFICAÇÃO DE CONFLITO >>> ---
+        # Verificação de Conflito (Sem alteração)
         is_free = calendar_service.is_slot_available(
-            salao_id=salao_id,
-            salon_data=salon_data,
-            new_start_dt=new_start_dt,
-            duration_minutes=duration,
-            ignore_firestore_id=agendamento_id,
-            ignore_google_event_id=google_event_id
+            salao_id=salao_id, salon_data=salon_data,
+            new_start_dt=new_start_dt, duration_minutes=duration,
+            ignore_firestore_id=agendamento_id, ignore_google_event_id=google_event_id
         )
-        
         if not is_free:
-            logging.warning(f"Conflito de agendamento detectado para {salao_id} em {new_start_dt}")
             raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT, # 409 Conflict
+                status_code=status.HTTP_409_CONFLICT,
                 detail="Horário indisponível. Conflito com outro agendamento ou evento pessoal."
             )
-        # --- <<< FIM DA VERIFICAÇÃO DE CONFLITO >>> ---
-
         
-        # 1. Sincronização: Atualizar no Google Calendar (Se o slot estiver livre)
+        # 1. Sincronização: Atualizar no Google Calendar (Sem alteração)
         if google_event_id:
             refresh_token = salon_data.get("google_refresh_token")
             if refresh_token:
                 logging.info(f"Atualizando evento do Google Calendar: {google_event_id}")
                 calendar_service.update_google_event(
-                    refresh_token, 
-                    google_event_id, 
-                    new_start_dt.isoformat(), 
-                    new_end_dt.isoformat()
+                    refresh_token, google_event_id, 
+                    new_start_dt.isoformat(), new_end_dt.isoformat()
                 )
             else:
                 logging.warning(f"Não foi possível atualizar {google_event_id} no Google. Refresh token não encontrado.")
 
-        # 2. Atualizar no Firestore (Se o slot estiver livre)
+        # 2. Atualizar no Firestore (Sem alteração)
         agendamento_ref.update({
             "startTime": new_start_dt,
             "endTime": new_end_dt
         })
         logging.info(f"Agendamento {agendamento_id} atualizado no Firestore.")
 
+        # --- <<< ADICIONADO: Notificação por E-mail (Cliente) >>> ---
+        if customer_email and customer_name and service_name and salon_name:
+            try:
+                logging.info(f"Enviando e-mail de reagendamento para {customer_email}...")
+                email_service.send_reschedule_email_to_customer(
+                    customer_email=customer_email,
+                    customer_name=customer_name,
+                    service_name=service_name,
+                    salon_name=salon_name,
+                    old_start_time_iso=old_start_time_dt.isoformat(), # Envia o horário antigo
+                    new_start_time_iso=new_start_dt.isoformat()     # Envia o horário novo
+                )
+            except Exception as e:
+                logging.error(f"Falha ao enviar e-mail de REAGENDAMENTO (Cliente) para {customer_email}: {e}")
+        else:
+            logging.warning(f"Pulando e-mail de reagendamento (dados incompletos) para agendamento {agendamento_id}")
+        # --- <<< FIM DA ADIÇÃO >>> ---
+
         return {"message": "Agendamento reagendado com sucesso."}
 
     except HTTPException as httpe:
-        raise httpe # Repassa o erro 409 (Conflito) ou outros
+        raise httpe 
     except Exception as e:
         logging.exception(f"Erro ao reagendar agendamento {agendamento_id}:")
         raise HTTPException(status_code=500, detail=f"Erro interno: {e}")
 
+
 # --- ROTEADOR PÚBLICO PARA O CALLBACK (Sem alterações) ---
 @callback_router.get("/google/auth/callback")
 async def google_auth_callback_handler(
-    state: str, # O UID do Firebase que enviámos
-    code: str, # O código de autorização do Google
-    scope: str  # Os escopos que o Google aprovou
+    state: str, 
+    code: str, 
+    scope: str
 ):
-    # ... (Seu código aqui - Sem alteração) ...
+    # ... (código sem alteração) ...
     logging.info(f"Recebido callback do Google para o state (UID): {state}")
-    
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
         logging.error("Credenciais OAuth do Google não configuradas no ambiente.")
         raise HTTPException(status_code=500, detail="Integração com Google não configurada.")
-    
     client_config = {
         "web": {
             "client_id": GOOGLE_CLIENT_ID, "client_secret": GOOGLE_CLIENT_SECRET,
@@ -485,41 +485,31 @@ async def google_auth_callback_handler(
             "token_uri": "https://oauth2.googleapis.com/token"
         }
     }
-    
     flow = Flow.from_client_config(
         client_config=client_config,
         scopes=SCOPES,
         redirect_uri=REDIRECT_URI
     )
-    
     try:
         flow.fetch_token(code=code)
         credentials = flow.credentials
         refresh_token = credentials.refresh_token
-        
         if not refresh_token:
             raise HTTPException(status_code=400, detail="Falha ao obter o token de atualização do Google. Tente remover o acesso Horalis da sua conta Google e tente novamente.")
-
         user_uid = state
         clients_ref = db.collection('cabeleireiros')
         query = clients_ref.where('ownerUID', '==', user_uid).limit(1) 
         client_doc_list = list(query.stream())
-        
         if not client_doc_list:
             raise HTTPException(status_code=404, detail="Usuário autenticado, mas nenhum salão Horalis encontrado.")
-            
         salao_doc_ref = client_doc_list[0].reference
-        
         salao_doc_ref.update({
             "google_refresh_token": refresh_token,
             "google_sync_enabled": True
         })
-        
         logging.info(f"Refresh Token do Google salvo com sucesso para o salão: {salao_doc_ref.id}")
-
         frontend_redirect_url = f"https://horalis.rebdigitalsolucoes.com.br/painel/{salao_doc_ref.id}/configuracoes?sync=success"
         return RedirectResponse(frontend_redirect_url)
-
     except Exception as e:
         logging.exception(f"Erro CRÍTICO durante o callback do Google OAuth: {e}")
         frontend_error_url = f"https://horalis.rebdigitalsolucoes.com.br/painel/{state}/configuracoes?sync=error"

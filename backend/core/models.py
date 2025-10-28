@@ -1,6 +1,6 @@
 # backend/core/models.py
 from pydantic import BaseModel, Field
-from typing import List, Optional # Usar List e Optional é uma boa prática em vez de |
+from typing import List, Optional 
 
 # --- Modelos Pydantic (Movidos do main.py) ---
 
@@ -54,10 +54,13 @@ class NewClientData(BaseModel): # Admin
     cor_gradiente_inicio: str = "#A78BFA"
     cor_gradiente_fim: str = "#F472B6"
 
+# --- <<< MODIFICADO: Modelo Appointment >>> ---
 class Appointment(BaseModel): # Cliente Final (Payload para POST /agendamentos)
     salao_id: str
     service_id: str
     start_time: str # Formato ISO
     customer_name: str = Field(..., min_length=2)
+    # <<< ADICIONADO: 'customer_email' com validação de regex >>>
+    customer_email: str = Field(..., pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
     customer_phone: str = Field(..., pattern=r"^(?:\+55)?(\d{2})?\d{8,9}$")
-
+# --- <<< FIM DA MODIFICAÇÃO >>> ---
