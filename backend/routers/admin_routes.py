@@ -136,7 +136,7 @@ async def disconnect_google_sync(
         # --- Fim da Verificação ---
 
         # Atualiza o documento no Firestore
-        await salao_doc_ref.update({
+        salao_doc_ref.update({
             "google_sync_enabled": False,
             "google_refresh_token": firestore.DELETE_FIELD # Remove o campo do token
         })
