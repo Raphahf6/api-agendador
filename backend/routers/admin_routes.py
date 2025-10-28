@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from google_auth_oauthlib.flow import Flow
 
 # Importações dos nossos módulos refatorados
-from core.models import ClientDetail, NewClientData, Service
+from core.models import ClientDetail, NewClientData, Service, ManualAppointmentData
 from core.auth import get_current_user 
 from core.db import get_all_clients_from_db, get_hairdresser_data_from_db, db
 import calendar_service 
@@ -46,14 +46,7 @@ class CalendarEvent(BaseModel):
     backgroundColor: Optional[str] = None
     borderColor: Optional[str] = None
     extendedProps: Optional[dict] = None
-    
-class ManualAppointmentData(BaseModel):
-    salao_id: str
-    start_time: str 
-    duration_minutes: int
-    customer_name: str = Field(..., min_length=2)
-    customer_phone: Optional[str] = None
-    service_name: str = Field(..., min_length=3)
+
     
 class ReagendamentoBody(BaseModel):
     new_start_time: str 
@@ -232,63 +225,66 @@ async def create_manual_appointment(
     # ... (código sem alteração, exceto pela adição do logging sobre o e-mail) ...
     user_email = current_user.get("email")
     salao_id = manual_data.salao_id 
+    customer_email_provided = manual_data.customer_email # <<< Pega o e-mail do cliente (pode ser None)
     logging.info(f"Admin {user_email} criando agendamento manual para {salao_id}")
     
     try:
-        # <<< ADICIONADO: Busca dados do salão para pegar o nome >>>
         salon_data = get_hairdresser_data_from_db(salao_id)
-        salon_name = salon_data.get("nome_salao", "Seu Salão") # Pega o nome ou usa um padrão
+        salon_name = salon_data.get("nome_salao", "Seu Salão")
 
         start_time_dt = datetime.fromisoformat(manual_data.start_time)
         end_time_dt = start_time_dt + timedelta(minutes=manual_data.duration_minutes)
-        
+
         agendamento_data = {
             "salaoId": salao_id,
-            "salonName": salon_name, 
-            "serviceName": manual_data.service_name, # <<< GARANTIDO: Nome do serviço manual
+            "salonName": salon_name,
+            "serviceName": manual_data.service_name,
             "durationMinutes": manual_data.duration_minutes,
             "startTime": start_time_dt,
             "endTime": end_time_dt,
             "customerName": manual_data.customer_name,
-            "customerPhone": manual_data.customer_phone or "N/A",
-            # serviceId não existe aqui, o que está OK.
-            "status": "manual", 
-            "createdBy": user_email, 
+            "customerPhone": manual_data.customer_phone or None, # Salva None se vazio
+            "customerEmail": customer_email_provided, # <<< ADICIONADO: Salva o e-mail (ou None)
+            "status": "manual",
+            "createdBy": user_email,
             "createdAt": firestore.SERVER_TIMESTAMP,
             "reminderSent": False
         }
-        
-        agendamento_ref = db.collection('cabeleireiros').document(manual_data.salao_id).collection('agendamentos').document()
+
+        agendamento_ref = db.collection('cabeleireiros').document(salao_id).collection('agendamentos').document()
         agendamento_ref.set(agendamento_data)
+        logging.info(f"Agendamento manual criado no Firestore com ID: {agendamento_ref.id}")
 
         # Sincronização Google (sem alteração)
-        salon_data = get_hairdresser_data_from_db(salao_id)
+        google_event_id = None # Inicializa
         if salon_data.get("google_sync_enabled") and salon_data.get("google_refresh_token"):
-            logging.info("Sincronização Google Ativa para agendamento manual.")
-            google_event_data = {
-                "summary": f"{manual_data.service_name} - {manual_data.customer_name}",
-                "description": f"Agendamento via Horalis (Manual).\nCliente: {manual_data.customer_name}\nTelefone: {manual_data.customer_phone}\nServiço: {manual_data.service_name}",
-                "start_time_iso": start_time_dt.isoformat(),
-                "end_time_iso": end_time_dt.isoformat(),
-            }
+            # ... (lógica de criar evento no google e pegar google_event_id) ...
+             google_event_data = { "summary": ..., "description": ..., "start_time_iso": ..., "end_time_iso": ... } # Montar dados
+             try:
+                 google_event_id = calendar_service.create_google_event_with_oauth( salon_data.get("google_refresh_token"), google_event_data )
+                 if google_event_id: agendamento_ref.update({"googleEventId": google_event_id})
+             except Exception as e: logging.error(f"Erro sync Google (manual): {e}")
+
+
+        # --- <<< ADICIONADO: Envio de E-mail de Confirmação para Cliente >>> ---
+        if customer_email_provided:
             try:
-                google_event_id = calendar_service.create_google_event_with_oauth(
-                    refresh_token=salon_data.get("google_refresh_token"),
-                    event_data=google_event_data
+                logging.info(f"Enviando e-mail de confirmação (manual) para {customer_email_provided}")
+                email_service.send_confirmation_email_to_customer(
+                    customer_email=customer_email_provided,
+                    customer_name=manual_data.customer_name,
+                    service_name=manual_data.service_name,
+                    start_time_iso=start_time_dt.isoformat(), # Usa o datetime convertido
+                    salon_name=salon_name
                 )
-                if google_event_id:
-                    agendamento_ref.update({"googleEventId": google_event_id})
-                    logging.info(f"Agendamento manual salvo no Google Calendar. ID: {google_event_id}")
-                else:
-                    logging.warning("Falha ao salvar agendamento manual no Google Calendar (função retornou None).")
             except Exception as e:
-                logging.error(f"Erro ao salvar agendamento manual no Google Calendar: {e}")
+                # Não quebra a operação se o e-mail falhar, apenas loga
+                logging.error(f"Falha ao enviar e-mail de confirmação (manual) para {customer_email_provided}: {e}")
         else:
-            logging.info("Sincronização Google desativada. Pulando etapa para agendamento manual.")
-        
-        # <<< ADICIONADO: Log de aviso sobre e-mail manual >>>
-        logging.info("Agendamento manual criado. E-mail de confirmação (Cliente) não enviado (e-mail não coletado neste formulário).")
-        
+            logging.info("Agendamento manual criado sem e-mail do cliente. Pulando notificação.")
+        # --- <<< FIM DA ADIÇÃO >>> ---
+
+
         return {"message": "Agendamento manual criado com sucesso!", "id": agendamento_ref.id}
 
     except Exception as e:

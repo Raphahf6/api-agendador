@@ -1,5 +1,5 @@
 # backend/core/models.py
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field,EmailStr 
 from typing import List, Optional 
 
 # --- Modelos Pydantic (Movidos do main.py) ---
@@ -64,3 +64,13 @@ class Appointment(BaseModel): # Cliente Final (Payload para POST /agendamentos)
     customer_email: str = Field(..., pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
     customer_phone: str = Field(..., pattern=r"^(?:\+55)?(\d{2})?\d{8,9}$")
 # --- <<< FIM DA MODIFICAÇÃO >>> ---
+
+class ManualAppointmentData(BaseModel):
+    salao_id: str
+    start_time: str # ISO string
+    duration_minutes: int
+    customer_name: str = Field(..., min_length=2)
+    customer_phone: Optional[str] = None
+    # <<< ADICIONADO: E-mail opcional, com validação de formato >>>
+    customer_email: Optional[EmailStr] = None
+    service_name: str = Field(..., min_length=3)
