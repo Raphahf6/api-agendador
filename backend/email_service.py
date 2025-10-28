@@ -310,3 +310,64 @@ def _get_base_css() -> str:
         .detail { background-color: #f9f6ff; padding: 10px; border-radius: 4px; border-left: 5px solid #a78bfa; }
         .footer { text-align: center; margin-top: 20px; font-size: 12px; color: #888; }
     """
+    
+    
+# --- <<< ADICIONADO: FUNÇÃO 5: E-mail de Lembrete para o CLIENTE >>> ---
+def send_reminder_email_to_customer(
+    customer_email: str,
+    customer_name: str,
+    service_name: str,
+    start_time_iso: str, # Hora do agendamento
+    salon_name: str
+) -> bool:
+    """
+    Envia um e-mail de LEMBRETE para o CLIENTE (ex: 1 hora antes).
+    """
+    formatted_time = _format_time_to_brt(start_time_iso)
+    subject = f"Lembrete de Agendamento ⏰ {service_name} hoje em {salon_name}"
+
+    html_content = f"""
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+            {_get_base_css()}
+            h1 {{ color: #FFA000; }} /* Laranja para lembrete */
+            .detail {{ border-left: 5px solid #FFECB3; background-color: #FFFDE7; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Lembrete de Agendamento!</h1>
+            <p>Olá, <strong>{customer_name}</strong>!</p>
+            <p>Este é um lembrete amigável sobre o seu agendamento hoje no(a) <strong>{salon_name}</strong>.</p>
+            
+            <div class="detail">
+                <strong>Serviço:</strong> {service_name}<br>
+                <strong>Horário:</strong> {formatted_time}<br>
+            </div>
+            
+            <p style="margin-top: 20px;">Esperamos por você! Caso precise cancelar ou reagendar, por favor, entre em contato diretamente com o estabelecimento o quanto antes.</p>
+        </div>
+        <div class="footer">
+            Este e-mail foi enviado automaticamente pelo sistema Horalis.
+        </div>
+    </body>
+    </html>
+    """
+    
+    try:
+        result = resend.Emails.send({
+            "from": "Horalis Agendamentos <Agendamentos-Horalis@rebdigitalsolucoes.com.br>",
+            "to": [customer_email],
+            "subject": subject,
+            "html": html_content,
+        })
+        logging.info(f"E-mail de LEMBRETE (para CLIENTE) enviado com sucesso para {customer_email}. ID: {result.get('id')}")
+        return True
+    except Exception as e:
+        logging.error(f"ERRO RESEND: Falha ao enviar e-mail de LEMBRETE (para CLIENTE) {customer_email}: {e}")
+        return False
+# --- <<< FIM DA ADIÇÃO >>> ---

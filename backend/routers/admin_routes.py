@@ -206,7 +206,8 @@ async def create_manual_appointment(
             # "customerEmail" não é coletado por este formulário (ainda)
             "status": "manual", 
             "createdBy": user_email, 
-            "createdAt": firestore.SERVER_TIMESTAMP 
+            "createdAt": firestore.SERVER_TIMESTAMP,
+            "reminderSent": False
         }
         
         agendamento_ref = db.collection('cabeleireiros').document(salao_id).collection('agendamentos').document()

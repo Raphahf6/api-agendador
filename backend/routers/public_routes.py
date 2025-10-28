@@ -97,7 +97,7 @@ async def create_appointment(appointment: Appointment):
             "salaoId": salao_id, "serviceId": service_id, "serviceName": service_name,
             "durationMinutes": duration, "startTime": start_time_dt, "endTime": end_time_dt,
             "customerName": user_name, "customerEmail": user_email, "customerPhone": user_phone,
-            "status": "confirmado", "createdAt": firestore.SERVER_TIMESTAMP 
+            "status": "confirmado", "createdAt": firestore.SERVER_TIMESTAMP, "reminderSent": False
         }
         agendamento_ref = db.collection('cabeleireiros').document(salao_id).collection('agendamentos').document()
         agendamento_ref.set(agendamento_data)
