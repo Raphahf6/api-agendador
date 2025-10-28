@@ -201,13 +201,14 @@ async def create_manual_appointment(
         
         agendamento_data = {
             "salaoId": salao_id,
-            "salonName": salon_name, # <<< ADICIONADO: Salva o nome do salão
-            "serviceName": manual_data.service_name,
+            "salonName": salon_name, 
+            "serviceName": manual_data.service_name, # <<< GARANTIDO: Nome do serviço manual
             "durationMinutes": manual_data.duration_minutes,
             "startTime": start_time_dt,
             "endTime": end_time_dt,
             "customerName": manual_data.customer_name,
             "customerPhone": manual_data.customer_phone or "N/A",
+            # serviceId não existe aqui, o que está OK.
             "status": "manual", 
             "createdBy": user_email, 
             "createdAt": firestore.SERVER_TIMESTAMP,

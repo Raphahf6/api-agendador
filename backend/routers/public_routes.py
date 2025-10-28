@@ -94,14 +94,16 @@ async def create_appointment(appointment: Appointment):
         start_time_dt = datetime.fromisoformat(start_time_str)
         end_time_dt = start_time_dt + timedelta(minutes=duration)
         agendamento_data = {
-            # ... (outros campos: salaoId, serviceId, serviceName) ...
-            "salonName": salon_name, # <<< ADICIONADO: Salva o nome do salão
+            "salaoId": salao_id,
+            "serviceId": appointment.service_id, # <<< ADICIONADO: Salva o ID do serviço
+            "serviceName": service_name,        # <<< GARANTIDO: Nome do serviço
+            "salonName": salon_name,            # <<< Já tínhamos adicionado
             "customerName": user_name,
             "customerEmail": user_email, 
             "customerPhone": user_phone,
-            "startTime": start_time_dt, # <<< MOVIDO PARA CONSISTÊNCIA
-            "endTime": end_time_dt,     # <<< MOVIDO PARA CONSISTÊNCIA
-            "durationMinutes": duration, # <<< MOVIDO PARA CONSISTÊNCIA
+            "startTime": start_time_dt, 
+            "endTime": end_time_dt,     
+            "durationMinutes": duration, 
             "status": "confirmado", 
             "createdAt": firestore.SERVER_TIMESTAMP,
             "reminderSent": False 
