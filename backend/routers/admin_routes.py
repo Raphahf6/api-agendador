@@ -107,6 +107,49 @@ async def get_salao_id_for_user(current_user: dict[str, Any] = Depends(get_curre
         logging.exception(f"Erro ao buscar salão por UID ({user_uid}): {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno ao buscar o ID do salão.")
 
+
+@router.patch("/clientes/{salao_id}/google-sync", status_code=status.HTTP_200_OK)
+async def disconnect_google_sync(
+    salao_id: str,
+    current_user: dict = Depends(get_current_user) # Protege a rota
+):
+    """
+    Desativa a sincronização com o Google Calendar para um salão específico.
+    Define 'google_sync_enabled' como False e remove o 'google_refresh_token'.
+    """
+    user_uid = current_user.get("uid") # Pega o UID do usuário logado
+    logging.info(f"Admin (UID: {user_uid}) solicitou desconexão do Google Sync para salão: {salao_id}")
+
+    try:
+        salao_doc_ref = db.collection('cabeleireiros').document(salao_id)
+        salao_doc = salao_doc_ref.get(['ownerUID']) # Busca apenas o ownerUID para verificação
+
+        if not salao_doc.exists:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Salão não encontrado.")
+
+        # --- Verificação de Propriedade (Opcional, mas MUITO recomendado) ---
+        # Garante que o usuário logado só possa desconectar o *seu* salão
+        salon_owner_uid = salao_doc.get('ownerUID')
+        if salon_owner_uid != user_uid:
+             logging.warning(f"Tentativa não autorizada de desconectar sync. User: {user_uid}, Salão: {salao_id}")
+             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Ação não autorizada.")
+        # --- Fim da Verificação ---
+
+        # Atualiza o documento no Firestore
+        await salao_doc_ref.update({
+            "google_sync_enabled": False,
+            "google_refresh_token": firestore.DELETE_FIELD # Remove o campo do token
+        })
+
+        logging.info(f"Sincronização Google desativada com sucesso para o salão: {salao_id}")
+        return {"message": "Sincronização com Google Calendar desativada com sucesso."}
+
+    except HTTPException as httpe:
+        raise httpe # Repassa erros HTTP (404, 403)
+    except Exception as e:
+        logging.exception(f"Erro ao desativar Google Sync para salão {salao_id}: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno ao desconectar sincronização.")
+    
 # --- Endpoints CRUD de Clientes (Sem alterações) ---
 @router.get("/clientes", response_model=List[ClientDetail])
 async def list_clients(current_user: dict = Depends(get_current_user)):
