@@ -12,6 +12,8 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token", auto_error=False)
 
 # <<< ALTERADO: Função agora recebe 'request' e 'token' pode ser None >>>
 async def get_current_user(request: Request, token: str = Depends(oauth2_scheme)):
+    logging.info(f"get_current_user called. Method: {request.method}") # Log 1: Método
+    logging.info(f"Token received (type: {type(token)}): {str(token)[:10] if token else 'None'}") # Log 2: Token
     """
     Dependência FastAPI para verificar o token Firebase ID.
     Usado para proteger os endpoints do admin.
