@@ -54,9 +54,9 @@ origins = [
     "http://localhost:5173", # Admin Frontend (local)
     "http://localhost:5174", # Cliente Frontend (local)
     "https://horalis.rebdigitalsolucoes.com.br", # Domínio personalizado
-    "https://api-agendador.onrender.com" # A própria API
-    "https://horalis.app"
-    "https://www.horalis.app"
+    "https://api-agendador.onrender.com", # A própria API
+    "https://horalis.app",
+    "https://www.horalis.app",
 ]
 app.add_middleware(
     CORSMiddleware,
