@@ -1,62 +1,77 @@
 # backend/core/auth.py
 import logging
-from fastapi import Depends, HTTPException, status
+# <<< ADICIONADO: Importa Request >>>
+from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer
 from firebase_admin import auth
-import calendar_service
+# Removido import não utilizado de calendar_service se não for necessário aqui
 
 # Define o esquema de autenticação.
-# "tokenUrl" é um parâmetro necessário para a documentação Swagger/FastAPI,
-# mesmo que não o usemos diretamente para obter o token (quem faz isso é o Firebase no frontend).
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token") 
+# <<< ALTERADO: Adicionado auto_error=False >>>
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token", auto_error=False)
 
-async def get_current_user(token: str = Depends(oauth2_scheme)):
+# <<< ALTERADO: Função agora recebe 'request' e 'token' pode ser None >>>
+async def get_current_user(request: Request, token: str = Depends(oauth2_scheme)):
     """
     Dependência FastAPI para verificar o token Firebase ID.
     Usado para proteger os endpoints do admin.
+    Ignora a verificação para requisições OPTIONS (preflight).
     Retorna os dados do usuário decodificados se o token for válido.
     """
-    if not token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token de autenticação não fornecido",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+
+    # <<< ADICIONADO: Checa se é preflight OPTIONS >>>
+    if request.method == "OPTIONS":
+        # Para requisições OPTIONS, bypass token validation.
+        # Retorna None ou um valor placeholder seguro.
+        # O importante é NÃO levantar erro 401/400.
+        logging.debug("OPTIONS request received, bypassing token validation.")
+        return None
+    # <<< FIM DA ADIÇÃO >>>
+
+    # --- Validação Normal para outros métodos (GET, POST, PUT, DELETE, PATCH) ---
+
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials / Token missing or invalid",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+    # <<< ADICIONADO: Checa se o token veio (necessário por causa do auto_error=False) >>>
+    if token is None:
+         # Se não é OPTIONS e não tem token, então é Unauthorized
+         logging.warning("Authentication token not provided for non-OPTIONS request.")
+         raise credentials_exception
+
+    # <<< Bloco try/except original mantido, mas ajustado para o token None já tratado >>>
     try:
         # Verifica o token usando o Firebase Admin SDK
+        logging.debug(f"Verifying token (first 10 chars): {token[:10]}...") # Log para debug
         decoded_token = auth.verify_id_token(token)
-        
+
         # --- Validação Opcional de Admin ---
-        # No futuro, podemos verificar se o e-mail é o seu e-mail de admin:
-        # admin_email = "seu-email@gmail.com"
-        # if decoded_token.get('email') != admin_email:
-        #     logging.warning(f"Tentativa de acesso admin falhou: {decoded_token.get('email')}")
-        #     raise HTTPException(
-        #         status_code=status.HTTP_403_FORBIDDEN,
-        #         detail="Acesso restrito ao administrador da plataforma."
-        #     )
+        # (Seu código de validação de admin comentado pode ficar aqui)
         # -------------------------------------
-        
-        logging.info(f"Token de admin verificado para: {decoded_token.get('email')}")
+
+        logging.info(f"Token verified for user: {decoded_token.get('email')}")
         return decoded_token
 
     except auth.ExpiredIdTokenError:
-        logging.warning("Token de admin expirado recebido.")
+        logging.warning("Expired token received.")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token expirado",
             headers={"WWW-Authenticate": "Bearer"},
         )
     except auth.InvalidIdTokenError as e:
-        logging.warning(f"Token de admin inválido recebido: {e}")
+        logging.warning(f"Invalid token received: {e}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Token inválido: {e}",
+            detail=f"Token inválido", # Removido {e} da mensagem para não expor detalhes
             headers={"WWW-Authenticate": "Bearer"},
         )
     except Exception as e:
-        # Captura outros erros (ex: problema de rede ao verificar o token)
-        logging.error(f"Erro inesperado na verificação do token admin: {e}")
+        # Captura outros erros
+        logging.error(f"Unexpected error during token verification: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Erro interno ao verificar autenticação",
