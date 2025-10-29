@@ -68,20 +68,24 @@ async def create_appointment(appointment: Appointment):
     start_time_str = appointment.start_time
     user_name = appointment.customer_name.strip()
     user_phone = appointment.customer_phone
-    user_email = appointment.customer_email.strip() # <<< E-mail do cliente
-    service_price = service_info.get('preco')
+    user_email = appointment.customer_email.strip()
+    
+    service_info = None
     
     logging.info(f"Cliente '{user_name}' ({user_email}) criando agendamento para {salao_id}")
-
+    
+    
     try:
         # 1. Validações e Busca de Dados (Sem alteração)
         salon_data = get_hairdresser_data_from_db(salao_id) 
         if not salon_data: raise HTTPException(status_code=404, detail="Salão não encontrado")
         service_info = salon_data.get("servicos_data", {}).get(service_id)
-        if not service_info: raise HTTPException(status_code=404, detail="Serviço não encontrado.")
+        if not service_info: # Checa se service_info é None ou vazio
+             raise HTTPException(status_code=404, detail="Serviço não selecionado ou inválido.")
         duration = service_info.get('duracao_minutos')
         service_name = service_info.get('nome_servico')
         salon_name = salon_data.get('nome_salao')
+        service_price = service_info.get('preco') # Pega o preço
         salon_email_destino = salon_data.get('calendar_id') 
         if duration is None or service_name is None or not salon_email_destino:
             raise HTTPException(status_code=500, detail="Dados do serviço ou e-mail de destino incompletos.")
