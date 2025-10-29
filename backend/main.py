@@ -53,10 +53,9 @@ app = FastAPI(
 origins = [
     "http://localhost:5173", # Admin Frontend (local)
     "http://localhost:5174", # Cliente Frontend (local)
-    "https://agendador-jet.vercel.app", # Frontend Vercel (Cliente)
-    "https://horalis-admin.vercel.app", # Frontend Vercel (Admin)
     "https://horalis.rebdigitalsolucoes.com.br", # Domínio personalizado
     "https://api-agendador.onrender.com" # A própria API
+    "https://horalis.app"
 ]
 app.add_middleware(
     CORSMiddleware,

@@ -17,7 +17,7 @@ import email_service
 # --- CONFIGURAÇÃO ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 REMINDER_WINDOW_MINUTES_BEFORE = 60 # Enviar lembrete X minutos antes
-QUERY_INTERVAL_MINUTES = 10        # Buscar agendamentos que ocorrem entre X e X+10 minutos a partir de agora + REMINDER_WINDOW
+QUERY_INTERVAL_MINUTES = 10   # Buscar agendamentos que ocorrem entre X e X+10 minutos a partir de agora + REMINDER_WINDOW
 
 # --- INICIALIZAÇÃO DO FIREBASE (Standalone) ---
 try:
