@@ -560,9 +560,9 @@ async def google_auth_callback_handler(
             "google_sync_enabled": True
         })
         logging.info(f"Refresh Token do Google salvo com sucesso para o salão: {salao_doc_ref.id}")
-        frontend_redirect_url = f"https://horalis.rebdigitalsolucoes.com.br/painel/{salao_doc_ref.id}/configuracoes?sync=success"
+        frontend_redirect_url = f"https://horalis.app/painel/{salao_doc_ref.id}/configuracoes?sync=success"
         return RedirectResponse(frontend_redirect_url)
     except Exception as e:
         logging.exception(f"Erro CRÍTICO durante o callback do Google OAuth: {e}")
-        frontend_error_url = f"https://horalis.rebdigitalsolucoes.com.br/painel/{state}/configuracoes?sync=error"
+        frontend_error_url = f"https://horalis.app/painel/{state}/configuracoes?sync=error"
         return RedirectResponse(frontend_error_url)
