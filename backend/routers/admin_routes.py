@@ -22,7 +22,7 @@ import email_service # <<< AGORA VAMOS USAR AS NOVAS FUNÇÕES
 router = APIRouter(
     prefix="/admin",
     tags=["Admin"],
-    dependencies=[Depends(get_current_user)] 
+
 )
 callback_router = APIRouter(
     prefix="/admin", 
