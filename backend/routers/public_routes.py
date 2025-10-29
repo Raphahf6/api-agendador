@@ -69,6 +69,7 @@ async def create_appointment(appointment: Appointment):
     user_name = appointment.customer_name.strip()
     user_phone = appointment.customer_phone
     user_email = appointment.customer_email.strip() # <<< E-mail do cliente
+    service_price = service_info.get('preco')
     
     logging.info(f"Cliente '{user_name}' ({user_email}) criando agendamento para {salao_id}")
 
@@ -104,6 +105,7 @@ async def create_appointment(appointment: Appointment):
             "startTime": start_time_dt, 
             "endTime": end_time_dt,     
             "durationMinutes": duration, 
+            "servicePrice": service_price,
             "status": "confirmado", 
             "createdAt": firestore.SERVER_TIMESTAMP,
             "reminderSent": False 
