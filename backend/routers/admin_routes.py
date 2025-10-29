@@ -258,31 +258,39 @@ async def create_manual_appointment(
         # Sincronização Google (sem alteração)
         google_event_id = None # Inicializa
         if salon_data.get("google_sync_enabled") and salon_data.get("google_refresh_token"):
-            # ... (lógica de criar evento no google e pegar google_event_id) ...
-             google_event_data = { "summary": ..., "description": ..., "start_time_iso": ..., "end_time_iso": ... } # Montar dados
-             try:
-                 google_event_id = calendar_service.create_google_event_with_oauth( salon_data.get("google_refresh_token"), google_event_data )
-                 if google_event_id: agendamento_ref.update({"googleEventId": google_event_id})
-             except Exception as e: logging.error(f"Erro sync Google (manual): {e}")
+            logging.info("Sincronização Google Ativa para agendamento manual.") # Log adicionado
 
+            # <<< CORREÇÃO: Montar google_event_data corretamente >>>
+            google_event_data = {
+                "summary": f"{manual_data.service_name} - {manual_data.customer_name}",
+                "description": (
+                    f"Agendamento via Horalis (Manual).\n"
+                    f"Cliente: {manual_data.customer_name}\n"
+                    f"Telefone: {manual_data.customer_phone or 'N/A'}\n"
+                    # Não incluímos e-mail na descrição por privacidade, a menos que você queira
+                    f"Serviço: {manual_data.service_name}"
+                ),
+                "start_time_iso": start_time_dt.isoformat(), # Usa o datetime já calculado
+                "end_time_iso": end_time_dt.isoformat(),     # Usa o datetime já calculado
+            }
+            # <<< FIM DA CORREÇÃO >>>
 
-        # --- <<< ADICIONADO: Envio de E-mail de Confirmação para Cliente >>> ---
-        if customer_email_provided:
             try:
-                logging.info(f"Enviando e-mail de confirmação (manual) para {customer_email_provided}")
-                email_service.send_confirmation_email_to_customer(
-                    customer_email=customer_email_provided,
-                    customer_name=manual_data.customer_name,
-                    service_name=manual_data.service_name,
-                    start_time_iso=start_time_dt.isoformat(), # Usa o datetime convertido
-                    salon_name=salon_name
+                google_event_id = calendar_service.create_google_event_with_oauth(
+                    refresh_token=salon_data.get("google_refresh_token"),
+                    event_data=google_event_data
                 )
+                if google_event_id:
+                    agendamento_ref.update({"googleEventId": google_event_id})
+                    logging.info(f"Agendamento manual salvo no Google Calendar. ID: {google_event_id}")
+                else:
+                    # Se create_google_event_with_oauth retornar None (falha interna lá)
+                    logging.warning("Falha ao salvar agendamento manual no Google Calendar (função retornou None).")
             except Exception as e:
-                # Não quebra a operação se o e-mail falhar, apenas loga
-                logging.error(f"Falha ao enviar e-mail de confirmação (manual) para {customer_email_provided}: {e}")
+                # Pega qualquer outra exceção durante a chamada ou update
+                logging.exception(f"Erro inesperado ao sync Google (manual): {e}") # <<< Alterado para exception para mais detalhes
         else:
-            logging.info("Agendamento manual criado sem e-mail do cliente. Pulando notificação.")
-        # --- <<< FIM DA ADIÇÃO >>> ---
+            logging.info("Sincronização Google desativada. Pulando etapa para agendamento manual.")
 
 
         return {"message": "Agendamento manual criado com sucesso!", "id": agendamento_ref.id}
