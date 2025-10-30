@@ -79,3 +79,6 @@ class ManualAppointmentData(BaseModel):
     # <<< ADICIONADO: E-mail opcional, com validação de formato >>>
     customer_email: Optional[EmailStr] = None
     service_name: str = Field(..., min_length=3)
+    nome_servico: str
+    duracao_minutos: int
+    preco: Optional[float] = None
