@@ -1,4 +1,6 @@
 # backend/routers/admin_routes.py
+from dotenv import load_dotenv
+load_dotenv() 
 import logging
 import os
 import re
@@ -11,7 +13,7 @@ from datetime import datetime, timedelta
 from pydantic import BaseModel, Field 
 from google_auth_oauthlib.flow import Flow
 from datetime import datetime, timedelta
-import mercadopago
+import mercadopago # Importa a biblioteca
 # Importações dos nossos módulos refatorados
 from core.models import ClientDetail, NewClientData, Service, ManualAppointmentData
 from core.auth import get_current_user 
@@ -60,14 +62,21 @@ class ReagendamentoBody(BaseModel):
     
 try:
     MP_ACCESS_TOKEN = os.environ.get("MERCADO_PAGO_ACCESS_TOKEN")
-    # 1. Inicializa o SDK base
-    sdk = mercadopago.SDK(MP_ACCESS_TOKEN)
-    # 2. Inicializa os clientes usando os métodos do SDK (como você indicou)
-    mp_plan_client = sdk.preapproval_plan()
-    mp_preapproval_client = sdk.preapproval()
-    logging.info("SDK do Mercado Pago e Clientes inicializados corretamente.")
+    if not MP_ACCESS_TOKEN:
+        logging.warning("MERCADO_PAGO_ACCESS_TOKEN não está configurado.")
+        sdk = None
+        mp_plan_client = None 
+        mp_preapproval_client = None
+    else:
+        # 1. Inicializa o SDK base
+        sdk = mercadopago.SDK(MP_ACCESS_TOKEN)
+        # 2. Inicializa os clientes usando os métodos DO SEU ARQUIVO sdk.py
+        mp_plan_client = sdk.plan()
+        mp_preapproval_client = sdk.preapproval()
+        logging.info("SDK do Mercado Pago e Clientes inicializados (sintaxe sdk.plan/sdk.preapproval).")
 except Exception as e:
-    logging.error(f"Erro ao inicializar SDK Mercado Pago: {e}")
+    # O AttributeError estava sendo capturado aqui
+    logging.error(f"Erro ao inicializar SDK Mercado Pago: {e}") 
     sdk = None
     mp_plan_client = None
     mp_preapproval_client = None
@@ -93,7 +102,7 @@ async def create_subscription_checkout(
     except Exception as e:
         raise HTTPException(status_code=500, detail="Erro ao associar pagamento.")
 
-    plan_idempotency_key = "horalis_pro_mensal_29_90_v1"
+    plan_idempotency_key = "horalis_pro_mensal_29_90_v1" # ID para seu controle
     plan_data = {
         "reason": "Assinatura Horalis Pro Mensal",
         "auto_recurring": {
@@ -102,32 +111,49 @@ async def create_subscription_checkout(
         },
         "notification_url": f"{RENDER_API_URL}/webhooks/mercado-pago", 
         "back_url": f"https://horalis.app/painel/{salao_id}/assinatura?status=success", 
+        "external_reference": plan_idempotency_key # Referência para busca
     }
 
     try:
         plan_id = None
         # <<< CORRIGIDO: Usa o mp_plan_client.search >>>
-        plan_search_result = mp_plan_client.search(filters={"external_reference": plan_idempotency_key})
-        
-        if plan_search_result["status"] == 200 and len(plan_search_result["response"]["results"]) > 0:
-            plan_id = plan_search_result["response"]["results"][0]["id"]
-            logging.info(f"Plano de assinatura encontrado: {plan_id}")
-        else:
+        # (O SDK v1/v2 pode não suportar busca por external_reference em planos,
+        # mas vamos tentar. Se falhar, a criação idempotente resolve)
+        try:
+             plan_search_result = mp_plan_client.search(filters={"external_reference": plan_idempotency_key})
+             if plan_search_result["status"] == 200 and len(plan_search_result["response"]["results"]) > 0:
+                 plan_id = plan_search_result["response"]["results"][0]["id"]
+                 logging.info(f"Plano de assinatura encontrado: {plan_id}")
+        except Exception:
+             logging.warning("Busca por external_reference do plano falhou, tentando criar...")
+             plan_id = None # Garante que plan_id é None
+
+        if not plan_id:
             logging.info("Criando novo plano Horalis Pro...")
-            plan_data["external_reference"] = plan_idempotency_key
             # <<< CORRIGIDO: Usa o mp_plan_client.create >>>
             plan_create_result = mp_plan_client.create(plan_data)
             
             if plan_create_result["status"] not in [200, 201]:
                 logging.error(f"Erro ao criar plano no MP: {plan_create_result.get('response')}")
-                raise HTTPException(status_code=500, detail="Erro ao criar plano de pagamento.")
-            plan_id = plan_create_result["response"]["id"]
-            logging.info(f"Novo plano criado: {plan_id}")
+                # Verifica se o erro é 'already exists' (idempotência)
+                if "already exists" in str(plan_create_result.get("response")):
+                     logging.warning("Plano já existe, tentando buscar pelo nome...")
+                     # Tenta buscar pelo nome (plano B)
+                     plan_search_result = mp_plan_client.search(filters={"reason": plan_data["reason"]})
+                     if plan_search_result["status"] == 200 and len(plan_search_result["response"]["results"]) > 0:
+                         plan_id = plan_search_result["response"]["results"][0]["id"]
+                     else:
+                         raise HTTPException(status_code=500, detail="Erro ao criar plano de pagamento (conflito).")
+                else:
+                    raise HTTPException(status_code=500, detail="Erro ao criar plano de pagamento.")
+            else:
+                 plan_id = plan_create_result["response"]["id"]
+                 logging.info(f"Novo plano criado: {plan_id}")
             
         preapproval_data = {
             "preapproval_plan_id": plan_id,
             "payer_email": user_email,
-            "external_reference": salao_id,
+            "external_reference": salao_id, # Vincula ao ID do salão
             "reason": "Assinatura Horalis Pro"
         }
         
@@ -156,6 +182,7 @@ async def webhook_mercado_pago(request: Request):
     if not mp_preapproval_client or not body:
         return {"status": "ignorado"}
 
+    # O tipo de notificação para assinaturas criadas assim é 'preapproval'
     if body.get("type") == "preapproval":
         preapproval_id = body.get("data", {}).get("id")
         if not preapproval_id:
@@ -170,7 +197,7 @@ async def webhook_mercado_pago(request: Request):
             
             data = preapproval_data["response"]
             salao_id = data.get("external_reference")
-            status = data.get("status")
+            status = data.get("status") # Ex: 'authorized', 'cancelled', 'paused'
             
             if not salao_id:
                 logging.warning(f"Webhook MP recebido sem external_reference (salao_id): {preapproval_id}")
