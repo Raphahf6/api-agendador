@@ -10,6 +10,7 @@ from typing import List, Optional, Any
 from datetime import datetime, timedelta
 from pydantic import BaseModel, Field 
 from google_auth_oauthlib.flow import Flow
+from datetime import datetime, timedelta
 
 # Importações dos nossos módulos refatorados
 from core.models import ClientDetail, NewClientData, Service, ManualAppointmentData
@@ -168,24 +169,44 @@ async def get_client_details(client_id: str, current_user: dict = Depends(get_cu
 
 @router.post("/clientes", response_model=ClientDetail, status_code=status.HTTP_201_CREATED)
 async def create_client(client_data: NewClientData, current_user: dict = Depends(get_current_user)):
-    # ... (código sem alteração) ...
+    """Cria um novo cliente (cabeleireiro), salvando o UID do dono
+       E iniciando o período de Teste Grátis (Trial)."""
     admin_email = current_user.get("email")
     user_uid = current_user.get("uid")
     logging.info(f"Admin {admin_email} (UID: {user_uid}) criando: {client_data.nome_salao}")
     client_id = client_data.numero_whatsapp
+    
     try:
         client_ref = db.collection('cabeleireiros').document(client_id)
         if client_ref.get().exists: 
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Cliente {client_id} já existe.")
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Cliente {client_id} (WhatsApp) já existe.")
+        
         data_to_save = client_data.dict() 
-        data_to_save['ownerUID'] = user_uid 
+        
+        # --- Vincula o salão ao usuário de autenticação ---
+        data_to_save['ownerUID'] = user_uid
+        
+        # --- <<< ADICIONADO: Lógica de Teste Grátis (Trial) >>> ---
+        # Define o status inicial da assinatura
+        data_to_save['subscriptionStatus'] = 'trialing' 
+        # Define a data de criação (para referência)
+        data_to_save['createdAt'] = firestore.SERVER_TIMESTAMP 
+        # Define quando o teste termina (7 dias a partir de agora)
+        # (O servidor da Render roda em UTC, o que é ótimo para consistência)
+        trial_end_date = datetime.now() + timedelta(days=7)
+        data_to_save['trialEndsAt'] = trial_end_date # O SDK do Firebase converte para Timestamp
+        # --- <<< FIM DA ADIÇÃO >>> ---
+        
         client_ref.set(data_to_save)
-        logging.info(f"Cliente '{data_to_save['nome_salao']}' (Dono: {user_uid}) criado ID: {client_id}")
+        logging.info(f"Cliente '{data_to_save['nome_salao']}' (Dono: {user_uid}) criado com ID: {client_id} em modo 'trialing'.")
+        
+        # Retorna o ClientDetail completo (o modelo não precisa ter os campos de assinatura)
         return ClientDetail(id=client_id, servicos=[], **data_to_save)
+        
     except HTTPException as httpe: raise httpe
     except Exception as e:
-        logging.exception(f"Erro ao criar cliente:");
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno.")
+        logging.exception(f"Erro ao criar cliente:")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno ao criar cliente.")
 
 @router.put("/clientes/{client_id}", response_model=ClientDetail)
 async def update_client(client_id: str, client_update_data: ClientDetail, current_user: dict = Depends(get_current_user)):
