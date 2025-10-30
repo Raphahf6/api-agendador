@@ -64,21 +64,19 @@ try:
     if not MP_ACCESS_TOKEN:
         logging.warning("MERCADO_PAGO_ACCESS_TOKEN não está configurado.")
         sdk = None
-        mp_plan_client = None 
-        mp_preapproval_client = None
+        mp_preference_client = None # Cliente de Pagamento Único
+        mp_payment_client = None    # Cliente para consultar Pagamentos
     else:
-        # 1. Inicializa o SDK base
         sdk = mercadopago.SDK(MP_ACCESS_TOKEN)
-        # 2. Inicializa os clientes usando os métodos DO SEU ARQUIVO sdk.py
-        mp_plan_client = sdk.plan()
-        mp_preapproval_client = sdk.preapproval()
-        logging.info("SDK do Mercado Pago e Clientes inicializados (sintaxe sdk.plan/sdk.preapproval).")
+        # Inicializa os clientes que vamos usar (baseado no seu sdk.py)
+        mp_preference_client = sdk.preference()
+        mp_payment_client = sdk.payment()
+        logging.info("SDK do Mercado Pago (Preference e Payment) inicializados.")
 except Exception as e:
-    # O AttributeError estava sendo capturado aqui
-    logging.error(f"Erro ao inicializar SDK Mercado Pago: {e}") 
+    logging.error(f"Erro ao inicializar SDK Mercado Pago: {e}")
     sdk = None
-    mp_plan_client = None
-    mp_preapproval_client = None
+    mp_preference_client = None
+    mp_payment_client = None
 # --- <<< FIM DA ALTERAÇÃO >>> ---
     
     # --- <<< ADICIONADO: ENDPOINT PARA CRIAR ASSINATURA >>> ---
@@ -89,17 +87,15 @@ async def create_subscription_checkout(
     current_user: dict = Depends(get_current_user)
 ):
     """
-    Cria um link de checkout (init_point) para o plano de assinatura "Horalis Pro"
-    em UMA ÚNICA ETAPA.
+    Cria um link de checkout (Preferência) para um PAGAMENTO ÚNICO
+    que garante 30 dias de acesso.
     """
-    # Verifica se o cliente de assinatura (preapproval) foi inicializado
-    if not mp_preapproval_client:
+    if not mp_preference_client:
         raise HTTPException(status_code=503, detail="Serviço de pagamento indisponível.")
 
     user_uid = current_user.get("uid")
     user_email = current_user.get("email")
     
-    # Busca o salao_id (WhatsApp) associado ao usuário logado
     try:
         query = db.collection('cabeleireiros').where(filter=firestore.FieldFilter('ownerUID', '==', user_uid)).limit(1)
         client_doc_list = list(query.stream())
@@ -109,104 +105,122 @@ async def create_subscription_checkout(
     except Exception as e:
         raise HTTPException(status_code=500, detail="Erro ao associar pagamento.")
 
-    # URL para onde o cliente volta
     back_url_success = f"https://horalis.app/painel/{salao_id}/assinatura?status=success"
-    # URL do seu webhook
     notification_url = f"{RENDER_API_URL}/webhooks/mercado-pago"
 
-    # --- <<< CORREÇÃO: DADOS DA ASSINATURA EM 1 ETAPA >>> ---
-    # Não criamos um "plano" (preapproval_plan) separado.
-    # Definimos a recorrência diretamente dentro da criação da "assinatura" (preapproval).
-    preapproval_data = {
-        "reason": "Assinatura Horalis Pro Mensal",
-        "auto_recurring": {
-            "frequency": 1,
-            "frequency_type": "months",
-            "transaction_amount": 29.90, # <<< SEU PREÇO
-            "currency_id": "BRL"
+    # --- Dados da PREFERÊNCIA de Pagamento Único ---
+    preference_data = {
+        "items": [
+            {
+                "id": f"horalis_pro_mensal_{salao_id}", # ID interno do item
+                "title": "Acesso Horalis Pro (30 dias)",
+                "description": "Acesso completo à plataforma Horalis por 30 dias.",
+                "quantity": 1,
+                "currency_id": "BRL",
+                "unit_price": 29.90 # <<< SEU PREÇO
+            }
+        ],
+        "payer": {
+            "email": user_email,
         },
-        "back_url": back_url_success,
+        "back_urls": {
+            "success": back_url_success,
+            "failure": f"https://horalis.app/painel/{salao_id}/assinatura?status=failure",
+            "pending": f"https://horalis.app/painel/{salao_id}/assinatura?status=pending"
+        },
+        "auto_return": "approved", # Retorna automaticamente se aprovado
         "notification_url": notification_url,
-        "payer_email": user_email,
         "external_reference": salao_id, # Vincula ao ID do salão
-        "status": "pending" # Inicia como pendente (aguardando pagamento)
     }
-    # --- <<< FIM DA CORREÇÃO >>> ---
+    # --- FIM DOS DADOS ---
 
     try:
-        logging.info(f"Enviando dados de preapproval (1 etapa) para MP para {user_email}...")
+        logging.info(f"Enviando dados de Preferência (Pagamento Único) para MP para {user_email}...")
         
-        # Chama a criação da assinatura (que gera o link)
-        preapproval_result = mp_preapproval_client.create(preapproval_data)
+        # Chama a criação da preferência
+        preference_result = mp_preference_client.create(preference_data)
         
-        logging.info(f"Resposta do MP: {preapproval_result}") # Log da resposta
+        logging.info(f"Resposta do MP: {preference_result}")
 
-        if preapproval_result["status"] not in [200, 201]:
-            # Se o erro 400 'card_token_id is required' persistir, é um erro de configuração na conta MP
-            logging.error(f"Erro ao criar link de assinatura MP (1 etapa): {preapproval_result.get('response')}")
-            raise HTTPException(status_code=500, detail="Erro ao gerar link de assinatura.")
+        if preference_result["status"] not in [200, 201]:
+            logging.error(f"Erro ao criar link de pagamento MP: {preference_result.get('response')}")
+            raise HTTPException(status_code=500, detail="Erro ao gerar link de pagamento.")
             
-        checkout_url = preapproval_result["response"].get("init_point")
+        checkout_url = preference_result["response"].get("init_point")
         
         if not checkout_url:
-             logging.error(f"MP retornou 200/201 mas 'init_point' (checkout_url) está faltando na resposta.")
+             logging.error(f"MP retornou 200/201 mas 'init_point' está faltando.")
              raise HTTPException(status_code=500, detail="Erro ao obter URL de checkout.")
              
-        logging.info(f"Link de checkout gerado com sucesso para {user_email}.")
+        logging.info(f"Link de checkout (Pagamento Único) gerado para {user_email}.")
         return {"checkout_url": checkout_url}
 
     except Exception as e:
-        logging.exception(f"Erro crítico ao criar assinatura MP para {user_email}: {e}")
+        logging.exception(f"Erro crítico ao criar pagamento MP para {user_email}: {e}")
         raise HTTPException(status_code=500, detail="Erro interno ao processar pagamento.")
-# --- <<< FIM DO ENDPOINT DE ASSINATURA >>> ---
+# --- <<< FIM DO ENDPOINT DE PAGAMENTO >>> ---
 
 
-# --- <<< ENDPOINT DE WEBHOOK (PÚBLICO - CORRIGIDO) >>> ---
+# --- <<< ALTERADO: ENDPOINT DE WEBHOOK (agora ouve 'payment') >>> ---
 @webhook_router.post("/mercado-pago")
 async def webhook_mercado_pago(request: Request):
     body = await request.json()
-    logging.info(f"Webhook Mercado Pago recebido: {body.get('type')}, ID: {body.get('data', {}).get('id')}")
+    logging.info(f"Webhook Mercado Pago recebido: Tipo: {body.get('type')}, Ação: {body.get('action')}")
     
-    if not mp_preapproval_client or not body:
+    if not mp_payment_client or not body:
+        logging.warning("Webhook ignorado: SDK não pronto ou corpo vazio.")
         return {"status": "ignorado"}
 
-    # O tipo de notificação para assinaturas criadas assim é 'preapproval'
-    if body.get("type") == "preapproval":
-        preapproval_id = body.get("data", {}).get("id")
-        if not preapproval_id:
+    # Ação 'payment.updated' ou 'payment.created'
+    if body.get("type") == "payment":
+        payment_id = body.get("data", {}).get("id")
+        if not payment_id:
+            logging.warning("Webhook de pagamento recebido sem ID.")
             return {"status": "id não encontrado"}
             
         try:
-            # <<< CORRIGIDO: Usa o mp_preapproval_client.get >>>
-            preapproval_data = mp_preapproval_client.get(preapproval_id)
-            if preapproval_data["status"] != 200:
-                logging.error(f"Erro ao buscar dados do webhook MP: {preapproval_data}")
+            # Busca os dados do PAGAMENTO no Mercado Pago
+            payment_data = mp_payment_client.get(payment_id)
+            if payment_data["status"] != 200:
+                logging.error(f"Erro ao buscar dados do webhook MP (Payment): {payment_data}")
                 return {"status": "erro ao buscar dados"}
             
-            data = preapproval_data["response"]
-            salao_id = data.get("external_reference")
-            status = data.get("status") # Ex: 'authorized', 'cancelled', 'paused'
+            data = payment_data["response"]
+            salao_id = data.get("external_reference") # Nosso ID do salão
+            status = data.get("status") # Ex: 'approved', 'pending', 'rejected'
             
             if not salao_id:
-                logging.warning(f"Webhook MP recebido sem external_reference (salao_id): {preapproval_id}")
+                logging.warning(f"Webhook MP (Payment) recebido sem external_reference: {payment_id}")
                 return {"status": "referência externa faltando"}
 
             salao_doc_ref = db.collection('cabeleireiros').document(salao_id)
             
-            update_data = {
-                "subscriptionStatus": status,
-                "subscriptionLastUpdated": firestore.SERVER_TIMESTAMP
-            }
-            if status == 'authorized': # Pagamento confirmado
-                update_data["mercadopagoSubscriptionId"] = preapproval_id
-            
-            logging.info(f"Atualizando assinatura para '{status}' para o salão: {salao_id}")
-            salao_doc_ref.update(update_data) # Síncrono
-            
+            # ATUALIZA O FIRESTORE APENAS SE O PAGAMENTO FOI APROVADO
+            if status == 'approved':
+                # Calcula a nova data de vencimento (30 dias a partir de agora)
+                new_paid_until = datetime.now(pytz.utc) + timedelta(days=30)
+                
+                logging.info(f"Pagamento APROVADO. Atualizando assinatura para 'active' para o salão: {salao_id} até {new_paid_until.isoformat()}")
+                salao_doc_ref.update({
+                    "subscriptionStatus": "active",
+                    "paidUntil": new_paid_until, # <<< SALVA A DATA DE VENCIMENTO
+                    "mercadopagoLastPaymentId": payment_id,
+                    "subscriptionLastUpdated": firestore.SERVER_TIMESTAMP
+                })
+            elif status in ['rejected', 'cancelled', 'refunded']:
+                logging.info(f"Pagamento falhou ou foi revertido. Status: '{status}' para o salão: {salao_id}")
+                # Aqui você pode decidir reverter o status se necessário
+                salao_doc_ref.update({
+                    "subscriptionStatus": status, # Salva o status da falha
+                    "subscriptionLastUpdated": firestore.SERVER_TIMESTAMP
+                })
+            else:
+                 logging.info(f"Webhook de pagamento recebido com status: '{status}'. Aguardando aprovação.")
+
             return {"status": "recebido"}
             
         except Exception as e:
-            logging.exception(f"Erro ao processar webhook do MP: {e}")
+            logging.exception(f"Erro ao processar webhook do MP (Payment): {e}")
             return {"status": "erro interno"}
 
     return {"status": "tipo de evento ignorado"}
