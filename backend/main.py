@@ -81,6 +81,8 @@ app.include_router(admin_routes.router, prefix="/api/v1")
 app.include_router(admin_routes.callback_router, prefix="/api/v1")
 # --- FIM DA INCLUSÃO ---
 
+app.include_router(admin_routes.webhook_router, prefix="/api/v1")
+
 
 # --- Rota Raiz Principal ---
 @app.get("/", tags=["Root"])

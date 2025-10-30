@@ -3,7 +3,7 @@ import logging
 import os
 import re
 import pytz # <<< ADICIONADO (para o fuso do reagendamento)
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from fastapi.responses import RedirectResponse 
 from firebase_admin import firestore
 from typing import List, Optional, Any
@@ -11,30 +11,35 @@ from datetime import datetime, timedelta
 from pydantic import BaseModel, Field 
 from google_auth_oauthlib.flow import Flow
 from datetime import datetime, timedelta
-
+import mercadopago
 # Importações dos nossos módulos refatorados
 from core.models import ClientDetail, NewClientData, Service, ManualAppointmentData
 from core.auth import get_current_user 
 from core.db import get_all_clients_from_db, get_hairdresser_data_from_db, db
 import calendar_service 
 import email_service # <<< AGORA VAMOS USAR AS NOVAS FUNÇÕES
+API_BASE_URL = "https://api-agendador.onrender.com/api/v1"
 
 # --- Configuração do Roteador Admin ---
 router = APIRouter(
     prefix="/admin",
     tags=["Admin"],
-
+    dependencies=[Depends(get_current_user)] # Proteção GLOBAL para este router
 )
 callback_router = APIRouter(
     prefix="/admin", 
     tags=["Admin - OAuth Callback"],
 )
-
+webhook_router = APIRouter(
+    prefix="/webhooks",
+    tags=["Webhooks"]
+    # Sem 'dependencies'
+)
 # ... (Constantes GOOGLE_CLIENT_ID, SCOPES, REDIRECT_URI, etc. - Sem alteração) ...
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET")
 SCOPES = ['https://www.googleapis.com/auth/calendar']
-RENDER_API_URL = "https://api-agendador.onrender.com" 
+RENDER_API_URL = "https://api-agendador.onrender.com/api/v1" 
 REDIRECT_URI = f"{RENDER_API_URL}/api/v1/admin/google/auth/callback"
 
 
@@ -52,7 +57,176 @@ class CalendarEvent(BaseModel):
 class ReagendamentoBody(BaseModel):
     new_start_time: str 
     
+try:
+    MP_ACCESS_TOKEN = os.environ.get("MERCADO_PAGO_ACCESS_TOKEN")
+    if not MP_ACCESS_TOKEN:
+        logging.warning("MERCADO_PAGO_ACCESS_TOKEN não está configurado. Pagamentos falharão.")
+        sdk = None
+    else:
+        sdk = mercadopago.SDK(MP_ACCESS_TOKEN)
+        logging.info("SDK do Mercado Pago inicializado.")
+except Exception as e:
+    logging.error(f"Erro ao inicializar SDK Mercado Pago: {e}")
+    sdk = None
     
+    # --- <<< ADICIONADO: ENDPOINT PARA CRIAR ASSINATURA >>> ---
+@router.post("/pagamentos/criar-assinatura", status_code=status.HTTP_201_CREATED)
+async def create_subscription_checkout(
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Cria um link de checkout para o plano de assinatura "Horalis Pro"
+    no Mercado Pago.
+    """
+    if not sdk:
+        raise HTTPException(status_code=503, detail="Serviço de pagamento indisponível.")
+
+    user_uid = current_user.get("uid")
+    user_email = current_user.get("email")
+    
+    # Busca o salao_id (WhatsApp) associado ao usuário logado
+    try:
+        query = db.collection('cabeleireiros').where('ownerUID', '==', user_uid).limit(1)
+        client_doc_list = list(query.stream())
+        if not client_doc_list:
+            raise HTTPException(status_code=404, detail="Nenhum salão encontrado para este usuário.")
+        salao_id = client_doc_list[0].id # O ID do documento (WhatsApp)
+    except Exception as e:
+        logging.error(f"Erro ao buscar salaoId pelo UID {user_uid} para pagamento: {e}")
+        raise HTTPException(status_code=500, detail="Erro ao associar pagamento ao salão.")
+
+    # --- Configuração do Plano de Assinatura ---
+    # ID único para este plano (para não criar duplicatas)
+    plan_idempotency_key = "horalis_pro_mensal_29_90_v1" # Mude se o preço mudar
+    
+    plan_data = {
+        "reason": "Assinatura Horalis Pro Mensal",
+        "auto_recurring": {
+            "frequency": 1,
+            "frequency_type": "months", # Cobrança mensal
+            "transaction_amount": 29.90, # <<< SEU PREÇO
+            "currency_id": "BRL"
+        },
+        # URL que o Mercado Pago chamará para notificar sobre pagamentos/status
+        "notification_url": f"{RENDER_API_URL}/webhooks/mercado-pago", 
+        # URL para onde o cliente volta após o checkout
+        "back_url": f"https://horalis.app/painel/{salao_id}/assinatura?status=success", 
+    }
+
+    try:
+        # 1. Tenta buscar o plano
+        # (Nota: a busca por external_reference no SDK às vezes é falha)
+        # Vamos focar em criar/atualizar pela 'reason' ou chave
+        plan_id = None
+        
+        # Simplificação: Vamos criar um novo plano se não acharmos um com nome exato
+        # (Uma lógica mais robusta checaria se o plano 'horalis_pro_mensal_29_90_v1' já existe)
+        
+        # Por simplicidade, vamos criar/atualizar o plano (o SDK é idempotente se a 'reason' for a mesma)
+        # Vamos usar um ID externo para o plano
+        plan_search_result = sdk.preapproval_plan().search(filters={"external_reference": plan_idempotency_key})
+        
+        if plan_search_result["status"] == 200 and len(plan_search_result["response"]["results"]) > 0:
+            plan_id = plan_search_result["response"]["results"][0]["id"]
+            logging.info(f"Plano de assinatura encontrado: {plan_id}")
+        else:
+            # Se não encontrou, cria um novo plano
+            logging.info("Nenhum plano encontrado. Criando novo plano Horalis Pro...")
+            plan_data["external_reference"] = plan_idempotency_key # Adiciona a referência
+            plan_create_result = sdk.preapproval_plan().create(plan_data)
+            
+            if plan_create_result["status"] not in [200, 201]:
+                logging.error(f"Erro ao criar plano no MP: {plan_create_result.get('response')}")
+                raise HTTPException(status_code=500, detail="Erro ao criar plano de pagamento.")
+            plan_id = plan_create_result["response"]["id"]
+            logging.info(f"Novo plano criado: {plan_id}")
+            
+        # 2. Criar o link de checkout (pré-aprovação) para este usuário
+        preapproval_data = {
+            "preapproval_plan_id": plan_id,
+            "payer_email": user_email,
+            # <<< IMPORTANTE: Vincula esta assinatura ao ID do salão >>>
+            "external_reference": salao_id, 
+            "reason": "Assinatura Horalis Pro"
+        }
+        
+        preapproval_result = sdk.preapproval().create(preapproval_data)
+        
+        if preapproval_result["status"] not in [200, 201]:
+            logging.error(f"Erro ao criar link de assinatura MP: {preapproval_result.get('response')}")
+            raise HTTPException(status_code=500, detail="Erro ao gerar link de assinatura.")
+            
+        # 3. Retorna o link de checkout para o frontend
+        checkout_url = preapproval_result["response"]["init_point"]
+        return {"checkout_url": checkout_url}
+
+    except Exception as e:
+        logging.exception(f"Erro crítico ao criar assinatura MP para {user_email}: {e}")
+        raise HTTPException(status_code=500, detail="Erro interno ao processar pagamento.")
+# --- <<< FIM DO ENDPOINT DE ASSINATURA >>> ---
+
+
+# --- <<< ADICIONADO: ENDPOINT DE WEBHOOK (PÚBLICO) >>> ---
+# Esta rota usa o 'webhook_router', que NÃO TEM autenticação
+@webhook_router.post("/mercado-pago")
+async def webhook_mercado_pago(request: Request):
+    """
+    Recebe notificações do Mercado Pago sobre o status das assinaturas.
+    """
+    body = await request.json()
+    logging.info(f"Webhook Mercado Pago recebido: {body.get('type')}, ID: {body.get('data', {}).get('id')}")
+    
+    if not sdk or not body:
+        return {"status": "ignorado"}
+
+    # Focamos em 'preapproval' (assinaturas)
+    if body.get("type") == "preapproval":
+        preapproval_id = body.get("data", {}).get("id")
+        if not preapproval_id:
+            return {"status": "id não encontrado"}
+            
+        try:
+            # Busca os dados da assinatura no Mercado Pago
+            preapproval_data = sdk.preapproval().get(preapproval_id)
+            if preapproval_data["status"] != 200:
+                logging.error(f"Erro ao buscar dados do webhook MP: {preapproval_data}")
+                return {"status": "erro ao buscar dados"}
+            
+            data = preapproval_data["response"]
+            salao_id = data.get("external_reference") # Nosso ID do salão
+            status = data.get("status") # Ex: 'authorized', 'cancelled', 'paused', 'pending'
+            
+            if not salao_id:
+                logging.warning(f"Webhook MP recebido sem external_reference (salao_id): {preapproval_id}")
+                return {"status": "referência externa faltando"}
+
+            salao_doc_ref = db.collection('cabeleireiros').document(salao_id)
+            
+            # Atualiza o status no Firestore
+            if status == 'authorized':
+                logging.info(f"Atualizando assinatura para 'active' para o salão: {salao_id}")
+                # Atualiza o status e guarda o ID da assinatura do MP
+                salao_doc_ref.update({
+                    "subscriptionStatus": "active",
+                    "mercadopagoSubscriptionId": preapproval_id,
+                    "subscriptionLastUpdated": firestore.SERVER_TIMESTAMP
+                })
+            elif status in ['cancelled', 'paused', 'pending']:
+                logging.info(f"Atualizando assinatura para '{status}' para o salão: {salao_id}")
+                salao_doc_ref.update({
+                    "subscriptionStatus": status, # Salva o status exato do MP
+                    "subscriptionLastUpdated": firestore.SERVER_TIMESTAMP
+                })
+            
+            return {"status": "recebido"}
+            
+        except Exception as e:
+            logging.exception(f"Erro ao processar webhook do MP: {e}")
+            return {"status": "erro interno"}
+
+    return {"status": "tipo de evento ignorado"}
+# --- <<< FIM DO WEBHOOK >>> ---
+
 # --- ENDPOINTS OAUTH (Sem alterações) ---
 @router.get("/google/auth/start", response_model=dict[str, str])
 async def google_auth_start(current_user: dict[str, Any] = Depends(get_current_user)):
