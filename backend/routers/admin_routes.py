@@ -102,7 +102,10 @@ async def create_subscription_checkout(
     except Exception as e:
         raise HTTPException(status_code=500, detail="Erro ao associar pagamento.")
 
-    plan_idempotency_key = "horalis_pro_mensal_29_90_v1" # ID para seu controle
+    # URL para onde o cliente volta
+    back_url_success = f"https://horalis.app/painel/{salao_id}/assinatura?status=success"
+
+    plan_idempotency_key = "horalis_pro_mensal_29_90_v1"
     plan_data = {
         "reason": "Assinatura Horalis Pro Mensal",
         "auto_recurring": {
@@ -110,57 +113,41 @@ async def create_subscription_checkout(
             "transaction_amount": 29.90, "currency_id": "BRL"
         },
         "notification_url": f"{RENDER_API_URL}/webhooks/mercado-pago", 
-        "back_url": f"https://horalis.app/painel/{salao_id}/assinatura?status=success", 
-        "external_reference": plan_idempotency_key # Referência para busca
+        "back_url": back_url_success, # URL no plano
+        "external_reference": plan_idempotency_key
     }
 
     try:
         plan_id = None
-        # <<< CORRIGIDO: Usa o mp_plan_client.search >>>
-        # (O SDK v1/v2 pode não suportar busca por external_reference em planos,
-        # mas vamos tentar. Se falhar, a criação idempotente resolve)
-        try:
-             plan_search_result = mp_plan_client.search(filters={"external_reference": plan_idempotency_key})
-             if plan_search_result["status"] == 200 and len(plan_search_result["response"]["results"]) > 0:
-                 plan_id = plan_search_result["response"]["results"][0]["id"]
-                 logging.info(f"Plano de assinatura encontrado: {plan_id}")
-        except Exception:
-             logging.warning("Busca por external_reference do plano falhou, tentando criar...")
-             plan_id = None # Garante que plan_id é None
-
-        if not plan_id:
+        plan_search_result = mp_plan_client.search(filters={"external_reference": plan_idempotency_key})
+        
+        if plan_search_result["status"] == 200 and len(plan_search_result["response"]["results"]) > 0:
+            plan_id = plan_search_result["response"]["results"][0]["id"]
+            logging.info(f"Plano de assinatura encontrado: {plan_id}")
+        else:
             logging.info("Criando novo plano Horalis Pro...")
-            # <<< CORRIGIDO: Usa o mp_plan_client.create >>>
             plan_create_result = mp_plan_client.create(plan_data)
-            
             if plan_create_result["status"] not in [200, 201]:
                 logging.error(f"Erro ao criar plano no MP: {plan_create_result.get('response')}")
-                # Verifica se o erro é 'already exists' (idempotência)
-                if "already exists" in str(plan_create_result.get("response")):
-                     logging.warning("Plano já existe, tentando buscar pelo nome...")
-                     # Tenta buscar pelo nome (plano B)
-                     plan_search_result = mp_plan_client.search(filters={"reason": plan_data["reason"]})
-                     if plan_search_result["status"] == 200 and len(plan_search_result["response"]["results"]) > 0:
-                         plan_id = plan_search_result["response"]["results"][0]["id"]
-                     else:
-                         raise HTTPException(status_code=500, detail="Erro ao criar plano de pagamento (conflito).")
-                else:
-                    raise HTTPException(status_code=500, detail="Erro ao criar plano de pagamento.")
-            else:
-                 plan_id = plan_create_result["response"]["id"]
-                 logging.info(f"Novo plano criado: {plan_id}")
+                raise HTTPException(status_code=500, detail="Erro ao criar plano de pagamento.")
+            plan_id = plan_create_result["response"]["id"]
+            logging.info(f"Novo plano criado: {plan_id}")
             
+        # --- <<< CORREÇÃO AQUI >>> ---
+        # Adiciona a 'back_url' também nos dados da pré-aprovação
         preapproval_data = {
             "preapproval_plan_id": plan_id,
             "payer_email": user_email,
             "external_reference": salao_id, # Vincula ao ID do salão
-            "reason": "Assinatura Horalis Pro"
+            "reason": "Assinatura Horalis Pro",
+            "back_url": back_url_success # <<< ADICIONADO: Informa à API que queremos um checkout
         }
+        # --- <<< FIM DA CORREÇÃO >>> ---
         
-        # <<< CORRIGIDO: Usa o mp_preapproval_client.create >>>
         preapproval_result = mp_preapproval_client.create(preapproval_data)
         
         if preapproval_result["status"] not in [200, 201]:
+            # O erro 400 'card_token_id is required' estava acontecendo aqui
             logging.error(f"Erro ao criar link de assinatura MP: {preapproval_result.get('response')}")
             raise HTTPException(status_code=500, detail="Erro ao gerar link de assinatura.")
             
