@@ -12,7 +12,6 @@ from typing import List, Optional, Any
 from datetime import datetime, timedelta
 from pydantic import BaseModel, Field 
 from google_auth_oauthlib.flow import Flow
-from datetime import datetime, timedelta
 import mercadopago # Importa a biblioteca
 # Importações dos nossos módulos refatorados
 from core.models import ClientDetail, NewClientData, Service, ManualAppointmentData
@@ -83,16 +82,24 @@ except Exception as e:
 # --- <<< FIM DA ALTERAÇÃO >>> ---
     
     # --- <<< ADICIONADO: ENDPOINT PARA CRIAR ASSINATURA >>> ---
+# --- <<< ENDPOINT PARA CRIAR ASSINATURA (CORREÇÃO RADICAL) >>> ---
+# Esta rota está protegida (usa o 'router' principal)
 @router.post("/pagamentos/criar-assinatura", status_code=status.HTTP_201_CREATED)
 async def create_subscription_checkout(
     current_user: dict = Depends(get_current_user)
 ):
-    if not mp_plan_client or not mp_preapproval_client:
+    """
+    Cria um link de checkout (init_point) para o plano de assinatura "Horalis Pro"
+    em UMA ÚNICA ETAPA.
+    """
+    # Verifica se o cliente de assinatura (preapproval) foi inicializado
+    if not mp_preapproval_client:
         raise HTTPException(status_code=503, detail="Serviço de pagamento indisponível.")
 
     user_uid = current_user.get("uid")
     user_email = current_user.get("email")
     
+    # Busca o salao_id (WhatsApp) associado ao usuário logado
     try:
         query = db.collection('cabeleireiros').where(filter=firestore.FieldFilter('ownerUID', '==', user_uid)).limit(1)
         client_doc_list = list(query.stream())
@@ -104,54 +111,48 @@ async def create_subscription_checkout(
 
     # URL para onde o cliente volta
     back_url_success = f"https://horalis.app/painel/{salao_id}/assinatura?status=success"
+    # URL do seu webhook
+    notification_url = f"{RENDER_API_URL}/webhooks/mercado-pago"
 
-    plan_idempotency_key = "horalis_pro_mensal_29_90_v1"
-    plan_data = {
+    # --- <<< CORREÇÃO: DADOS DA ASSINATURA EM 1 ETAPA >>> ---
+    # Não criamos um "plano" (preapproval_plan) separado.
+    # Definimos a recorrência diretamente dentro da criação da "assinatura" (preapproval).
+    preapproval_data = {
         "reason": "Assinatura Horalis Pro Mensal",
         "auto_recurring": {
-            "frequency": 1, "frequency_type": "months",
-            "transaction_amount": 29.90, "currency_id": "BRL"
+            "frequency": 1,
+            "frequency_type": "months",
+            "transaction_amount": 29.90, # <<< SEU PREÇO
+            "currency_id": "BRL"
         },
-        "notification_url": f"{RENDER_API_URL}/webhooks/mercado-pago", 
-        "back_url": back_url_success, # URL no plano
-        "external_reference": plan_idempotency_key
+        "back_url": back_url_success,
+        "notification_url": notification_url,
+        "payer_email": user_email,
+        "external_reference": salao_id, # Vincula ao ID do salão
+        "status": "pending" # Inicia como pendente (aguardando pagamento)
     }
+    # --- <<< FIM DA CORREÇÃO >>> ---
 
     try:
-        plan_id = None
-        plan_search_result = mp_plan_client.search(filters={"external_reference": plan_idempotency_key})
+        logging.info(f"Enviando dados de preapproval (1 etapa) para MP para {user_email}...")
         
-        if plan_search_result["status"] == 200 and len(plan_search_result["response"]["results"]) > 0:
-            plan_id = plan_search_result["response"]["results"][0]["id"]
-            logging.info(f"Plano de assinatura encontrado: {plan_id}")
-        else:
-            logging.info("Criando novo plano Horalis Pro...")
-            plan_create_result = mp_plan_client.create(plan_data)
-            if plan_create_result["status"] not in [200, 201]:
-                logging.error(f"Erro ao criar plano no MP: {plan_create_result.get('response')}")
-                raise HTTPException(status_code=500, detail="Erro ao criar plano de pagamento.")
-            plan_id = plan_create_result["response"]["id"]
-            logging.info(f"Novo plano criado: {plan_id}")
-            
-        # --- <<< CORREÇÃO AQUI >>> ---
-        # Adiciona a 'back_url' também nos dados da pré-aprovação
-        preapproval_data = {
-            "preapproval_plan_id": plan_id,
-            "payer_email": user_email,
-            "external_reference": salao_id, # Vincula ao ID do salão
-            "reason": "Assinatura Horalis Pro",
-            "back_url": back_url_success # <<< ADICIONADO: Informa à API que queremos um checkout
-        }
-        # --- <<< FIM DA CORREÇÃO >>> ---
-        
+        # Chama a criação da assinatura (que gera o link)
         preapproval_result = mp_preapproval_client.create(preapproval_data)
         
+        logging.info(f"Resposta do MP: {preapproval_result}") # Log da resposta
+
         if preapproval_result["status"] not in [200, 201]:
-            # O erro 400 'card_token_id is required' estava acontecendo aqui
-            logging.error(f"Erro ao criar link de assinatura MP: {preapproval_result.get('response')}")
+            # Se o erro 400 'card_token_id is required' persistir, é um erro de configuração na conta MP
+            logging.error(f"Erro ao criar link de assinatura MP (1 etapa): {preapproval_result.get('response')}")
             raise HTTPException(status_code=500, detail="Erro ao gerar link de assinatura.")
             
-        checkout_url = preapproval_result["response"]["init_point"]
+        checkout_url = preapproval_result["response"].get("init_point")
+        
+        if not checkout_url:
+             logging.error(f"MP retornou 200/201 mas 'init_point' (checkout_url) está faltando na resposta.")
+             raise HTTPException(status_code=500, detail="Erro ao obter URL de checkout.")
+             
+        logging.info(f"Link de checkout gerado com sucesso para {user_email}.")
         return {"checkout_url": checkout_url}
 
     except Exception as e:
