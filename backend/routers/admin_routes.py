@@ -117,7 +117,7 @@ async def create_subscription_checkout(
                 "description": "Acesso completo à plataforma Horalis por 30 dias.",
                 "quantity": 1,
                 "currency_id": "BRL",
-                "unit_price": 29.90 # <<< SEU PREÇO
+                "unit_price": 00.99 # <<< SEU PREÇO
             }
         ],
         "payer": {
