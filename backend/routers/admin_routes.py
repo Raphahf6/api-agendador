@@ -439,10 +439,12 @@ async def create_manual_appointment(
             "customerName": manual_data.customer_name,
             "customerPhone": manual_data.customer_phone or None, # Salva None se vazio
             "customerEmail": customer_email_provided, # <<< ADICIONADO: Salva o e-mail (ou None)
-            "status": "manual",
+            "status": "confirmado",
             "createdBy": user_email,
             "createdAt": firestore.SERVER_TIMESTAMP,
-            "reminderSent": False
+            "reminderSent": False,
+            "serviceId": manual_data.service_id,       
+            "servicePrice": manual_data.service_price,
         }
 
         agendamento_ref = db.collection('cabeleireiros').document(salao_id).collection('agendamentos').document()

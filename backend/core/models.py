@@ -76,7 +76,6 @@ class ManualAppointmentData(BaseModel):
     duration_minutes: int
     customer_name: str = Field(..., min_length=2)
     customer_phone: Optional[str] = None
-    # <<< ADICIONADO: E-mail opcional, com validação de formato >>>
     customer_email: Optional[EmailStr] = None
     service_name: str = Field(..., min_length=3)
     service_id: Optional[str] = None
