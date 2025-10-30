@@ -150,7 +150,7 @@ async def create_subscription_checkout(
             "reason": "Assinatura Horalis Pro"
         }
         
-        preapproval_result = sdk.preapproval().create(preapproval_data)
+        preapproval_result = sdk.preapproval.create(preapproval_data)
         
         if preapproval_result["status"] not in [200, 201]:
             logging.error(f"Erro ao criar link de assinatura MP: {preapproval_result.get('response')}")
@@ -187,7 +187,7 @@ async def webhook_mercado_pago(request: Request):
             
         try:
             # Busca os dados da assinatura no Mercado Pago
-            preapproval_data = sdk.preapproval().get(preapproval_id)
+            preapproval_data = sdk.preapproval.get(preapproval_id)
             if preapproval_data["status"] != 200:
                 logging.error(f"Erro ao buscar dados do webhook MP: {preapproval_data}")
                 return {"status": "erro ao buscar dados"}
