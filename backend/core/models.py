@@ -1,6 +1,7 @@
 # backend/core/models.py
 from pydantic import BaseModel, Field,EmailStr 
 from typing import List, Optional 
+from datetime import datetime
 
 # --- Modelos Pydantic (Movidos do main.py) ---
 
@@ -35,6 +36,10 @@ class ClientDetail(BaseModel): # Admin
     cor_secundaria: Optional[str] = None
     cor_gradiente_inicio: Optional[str] = None
     cor_gradiente_fim: Optional[str] = None
+    # <<< ADICIONADO: Campos de Assinatura >>>
+    subscriptionStatus: Optional[str] = None
+    trialEndsAt: Optional[datetime] = None
+    # <<< FIM DA ADIÇÃO >>>
 
 class NewClientData(BaseModel): # Admin
     nome_salao: str
