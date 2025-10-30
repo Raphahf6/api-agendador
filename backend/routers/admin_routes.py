@@ -19,6 +19,7 @@ from core.db import get_all_clients_from_db, get_hairdresser_data_from_db, db
 import calendar_service 
 import email_service # <<< AGORA VAMOS USAR AS NOVAS FUNÇÕES
 API_BASE_URL = "https://api-agendador.onrender.com/api/v1"
+sdk = mercadopago.SDK("TEST_ACCESS_TOKEN")
 
 # --- Configuração do Roteador Admin ---
 router = APIRouter(
@@ -59,18 +60,12 @@ class ReagendamentoBody(BaseModel):
     
 try:
     MP_ACCESS_TOKEN = os.environ.get("MERCADO_PAGO_ACCESS_TOKEN")
-    if not MP_ACCESS_TOKEN:
-        logging.warning("MERCADO_PAGO_ACCESS_TOKEN não está configurado.")
-        sdk = None
-        mp_plan_client = None 
-        mp_preapproval_client = None
-    else:
-        # 1. Inicializa o SDK base
-        sdk = mercadopago.SDK(MP_ACCESS_TOKEN)
-        # 2. Inicializa os clientes usando os métodos do SDK (como você indicou)
-        mp_plan_client = sdk.preapproval_plan()
-        mp_preapproval_client = sdk.preapproval()
-        logging.info("SDK do Mercado Pago e Clientes inicializados corretamente.")
+    # 1. Inicializa o SDK base
+    sdk = mercadopago.SDK(MP_ACCESS_TOKEN)
+    # 2. Inicializa os clientes usando os métodos do SDK (como você indicou)
+    mp_plan_client = sdk.preapproval_plan()
+    mp_preapproval_client = sdk.preapproval()
+    logging.info("SDK do Mercado Pago e Clientes inicializados corretamente.")
 except Exception as e:
     logging.error(f"Erro ao inicializar SDK Mercado Pago: {e}")
     sdk = None
