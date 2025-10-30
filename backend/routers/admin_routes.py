@@ -124,7 +124,7 @@ async def create_subscription_checkout(
         
         # Por simplicidade, vamos criar/atualizar o plano (o SDK é idempotente se a 'reason' for a mesma)
         # Vamos usar um ID externo para o plano
-        plan_search_result = sdk.preapproval_plan.search(filters={"external_reference": plan_idempotency_key})
+        plan_search_result = sdk.preapproval.search(filters={"external_reference": plan_idempotency_key})
         
         if plan_search_result["status"] == 200 and len(plan_search_result["response"]["results"]) > 0:
             plan_id = plan_search_result["response"]["results"][0]["id"]
@@ -133,7 +133,7 @@ async def create_subscription_checkout(
             # Se não encontrou, cria um novo plano
             logging.info("Nenhum plano encontrado. Criando novo plano Horalis Pro...")
             plan_data["external_reference"] = plan_idempotency_key # Adiciona a referência
-            plan_create_result = sdk.preapproval_plan.search.create(plan_data)
+            plan_create_result = sdk.preapproval.search.create(plan_data)
             
             if plan_create_result["status"] not in [200, 201]:
                 logging.error(f"Erro ao criar plano no MP: {plan_create_result.get('response')}")
