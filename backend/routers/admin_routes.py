@@ -51,7 +51,14 @@ SCOPES = ['https://www.googleapis.com/auth/calendar']
 RENDER_API_URL = "https://api-agendador.onrender.com/api/v1" 
 REDIRECT_URI = f"{RENDER_API_URL}/api/v1/admin/google/auth/callback"
 
-
+class ClienteListItem(BaseModel):
+    id: str
+    nome: str
+    email: str
+    whatsapp: str
+    data_cadastro: Optional[datetime] = None
+    ultima_visita: Optional[datetime] = None
+    
 # --- Modelos Pydantic (Sem alteração) ---
 class CalendarEvent(BaseModel):
     id: str
@@ -1033,3 +1040,54 @@ async def check_payment_status(payment_id: str):
         # Retorna 'pending' por segurança, para não interromper o polling
         return {"status": "pending", "message": "Erro de comunicação. Tente o login em instantes."}
 # --- <<< FIM DO ENDPOINT DE POLLING >>> ---
+
+@router.get("/clientes/{salao_id}/lista-crm", response_model=List[ClienteListItem])
+async def list_crm_clients(
+    salao_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Lista todos os clientes CRM (perfis implícitos) associados a um salão específico.
+    Acesso restrito a usuários logados e com assinatura ativa.
+    """
+    user_email = current_user.get("email")
+    logging.info(f"Admin {user_email} solicitou lista CRM para salão: {salao_id}")
+
+    try:
+        # 1. Referência à subcoleção 'clientes'
+        clientes_ref = db.collection('cabeleireiros').document(salao_id).collection('clientes')
+        
+        # 2. Busca todos os documentos
+        # Nota: Você pode querer adicionar 'orderBy' e 'limit' aqui no futuro
+        # para performance, mas por enquanto, vamos buscar todos.
+        docs = clientes_ref.stream()
+        
+        clientes_list = []
+        for doc in docs:
+            data = doc.to_dict()
+            
+            # 3. Formata os dados para o Pydantic
+            # Converte os Timestamps (do Firestore) para datetime
+            data_cadastro = data.get('data_cadastro')
+            ultima_visita = data.get('ultima_visita')
+
+            clientes_list.append(ClienteListItem(
+                id=doc.id,
+                nome=data.get('nome', 'N/A'),
+                email=data.get('email', 'N/A'),
+                whatsapp=data.get('whatsapp', 'N/A'),
+                # Converte o Firestore Timestamp (se existir) para string ISO (o frontend React espera string)
+                data_cadastro=data_cadastro.isoformat() if data_cadastro else None,
+                ultima_visita=ultima_visita.isoformat() if ultima_visita else None,
+            ))
+        
+        logging.info(f"Retornando {len(clientes_list)} perfis CRM para o salão {salao_id}.")
+        return clientes_list
+
+    except Exception as e:
+        logging.exception(f"Erro ao buscar perfis CRM para o salão {salao_id}: {e}")
+        # Retorna erro 404 se o salão não existir (embora o get_current_user já proteja um pouco)
+        if "No document to update" in str(e):
+             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Salão não encontrado.")
+        
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno ao buscar clientes.")
