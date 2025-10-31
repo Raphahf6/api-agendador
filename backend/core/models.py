@@ -1,9 +1,10 @@
 # backend/core/models.py
-from pydantic import BaseModel, Field,EmailStr 
+from pydantic import BaseModel, Field, EmailStr 
 from typing import List, Optional 
 from datetime import datetime
+from uuid import UUID 
 
-# --- Modelos Pydantic (Movidos do main.py) ---
+# --- Modelos Pydantic ---
 
 class Service(BaseModel):
     id: Optional[str] = None
@@ -11,6 +12,18 @@ class Service(BaseModel):
     duracao_minutos: int
     preco: Optional[float] = None
     descricao: Optional[str] = None
+
+# --- NOVO MODELO: Cliente (para o CRM) ---
+class Cliente(BaseModel):
+    id: Optional[str] = None 
+    profissional_id: Optional[str] = None 
+    nome: str
+    email: EmailStr
+    whatsapp: str
+    data_cadastro: Optional[datetime] = None
+    ultima_visita: Optional[datetime] = None
+# --- FIM DO NOVO MODELO ---
+
 
 class SalonPublicDetails(BaseModel):
     nome_salao: str
@@ -36,10 +49,9 @@ class ClientDetail(BaseModel): # Admin
     cor_secundaria: Optional[str] = None
     cor_gradiente_inicio: Optional[str] = None
     cor_gradiente_fim: Optional[str] = None
-    # <<< ADICIONADO: Campos de Assinatura >>>
+    # Campos de Assinatura
     subscriptionStatus: Optional[str] = None
     trialEndsAt: Optional[datetime] = None
-    # <<< FIM DA ADIÇÃO >>>
 
 class NewClientData(BaseModel): # Admin
     nome_salao: str
@@ -51,24 +63,24 @@ class NewClientData(BaseModel): # Admin
     dias_trabalho: List[str] = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday']
     horario_inicio: str = '09:00'
     horario_fim: str = '18:00'
-    url_logo: Optional[str] = None # Logo pode ser nulo
+    url_logo: Optional[str] = None
     
-    # Cores padrão (para evitar 'null' que quebra o frontend)
+    # Cores padrão
     cor_primaria: str = "#6366F1" 
     cor_secundaria: str = "#EC4899"
     cor_gradiente_inicio: str = "#A78BFA"
     cor_gradiente_fim: str = "#F472B6"
 
-# --- <<< MODIFICADO: Modelo Appointment >>> ---
+# --- MODIFICADO: Modelo Appointment (Adicionado cliente_id) ---
 class Appointment(BaseModel): # Cliente Final (Payload para POST /agendamentos)
     salao_id: str
     service_id: str
     start_time: str # Formato ISO
     customer_name: str = Field(..., min_length=2)
-    # <<< ADICIONADO: 'customer_email' com validação de regex >>>
     customer_email: str = Field(..., pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
-    customer_phone: str = Field(..., pattern=r"^(?:\+55)?(\d{2})?\d{8,9}$")
-# --- <<< FIM DA MODIFICAÇÃO >>> ---
+    customer_phone: str = Field(..., pattern=r"^(?:\+55)?\d{10,11}$")
+    cliente_id: Optional[str] = None # NOVO CAMPO
+# --- FIM DA MODIFICAÇÃO ---
 
 class ManualAppointmentData(BaseModel):
     salao_id: str
