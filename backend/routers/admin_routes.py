@@ -1245,3 +1245,113 @@ async def send_promotional_email_endpoint(
              
         logging.exception(f"Erro ao enviar e-mail promocional para cliente {body.cliente_id}: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=detail_msg)
+    
+class DashboardDataResponse(BaseModel):
+    agendamentos_foco_valor: int
+    novos_clientes_valor: int
+    receita_estimada: str # R$ formatada
+    chart_data: List[dict] # Dados para o gráfico
+    
+@router.get("/dashboard-data/{salao_id}", response_model=DashboardDataResponse)
+async def get_dashboard_data_consolidated(
+    salao_id: str,
+    agendamentos_foco_periodo: str = Query("hoje"), # 'hoje', 'prox7dias', 'novos24h'
+    novos_clientes_periodo: str = Query("30dias"), # 'hoje', '7dias', '30dias'
+    agendamentos_grafico_dias: int = Query(7),     # 7, 15, 30
+    receita_periodo: str = Query("hoje"),          # 'hoje', 'semana', 'mes'
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Busca de forma segura todos os dados de KPIs e Gráfico em uma única chamada.
+    Executa TODAS as queries do dashboard no backend.
+    """
+    logging.info(f"Admin {current_user.get('email')} buscando dados consolidados para {salao_id}.")
+    
+    try:
+        agendamentos_ref = db.collection('cabeleireiros').document(salao_id).collection('agendamentos')
+        clientes_ref = db.collection('cabeleireiros').document(salao_id).collection('clientes')
+
+        now = datetime.now(pytz.utc) # Garantir o fuso UTC para o servidor
+        
+        # --- Lógica de Datas ---
+        # Definir as datas de TODOS os filtros aqui (use o módulo datetime e timedelta)
+        # -----------------------
+
+        # Exemplo de cálculo para Novos Clientes
+        if novos_clientes_periodo == 'hoje':
+             clientes_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+             clientes_end = now
+        elif novos_clientes_periodo == '7dias':
+             clientes_start = now - timedelta(days=7)
+             clientes_end = now
+        else: # 30 dias
+             clientes_start = now - timedelta(days=30)
+             clientes_end = now
+        
+        # Exemplo de cálculo para o Gráfico
+        chart_start = now - timedelta(days=agendamentos_grafico_dias)
+        chart_end = now
+        
+        # Exemplo de cálculo para Agendamentos em Foco
+        if agendamentos_foco_periodo == 'hoje':
+            foco_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            foco_end = now + timedelta(days=1)
+        # ... (adicione a lógica para 'prox7dias' e 'novos24h' aqui)
+        
+        
+        # --- Queries Firestone (AGORA SEGURAS) ---
+        # OBS: Você precisa adaptar a lógica abaixo para o seu padrão de datas (usando Timestamp.fromDate)
+        
+        # 1. KPI NOVOS CLIENTES
+        novos_clientes_query = clientes_ref.where('data_cadastro', '>=', clientes_start).where('data_cadastro', '<=', clientes_end)
+        
+        # 2. KPI AGENDAMENTOS EM FOCO
+        foco_query = agendamentos_ref.where('startTime', '>=', foco_start).where('startTime', '<', foco_end).where('status', '!=', 'cancelado')
+
+        # 3. KPI RECEITA
+        receita_start = now.replace(day=1) # Mês atual simplificado
+        receita_query = agendamentos_ref.where('startTime', '>=', receita_start).where('status', '!=', 'cancelado')
+        
+        # 4. GRÁFICO
+        chart_query = agendamentos_ref.where('startTime', '>=', chart_start).where('startTime', '<=', chart_end).where('status', '!=', 'cancelado')
+
+        
+        # --- Execução das Consultas (Simultâneas) ---
+        novos_clientes_snapshot, foco_snapshot, receita_snapshot, chart_snapshot = await firestore.async_transaction(db.transaction()).run_in_executor(
+            None, lambda: [
+                novos_clientes_query.get(),
+                foco_query.get(),
+                receita_query.get(),
+                chart_query.get()
+            ]
+        )
+        
+        # --- Processamento dos Resultados ---
+        
+        # 1. Novos Clientes
+        count_novos_clientes = novos_clientes_snapshot.count
+        
+        # 2. Agendamentos em Foco
+        count_agendamentos_foco = foco_snapshot.count
+        
+        # 3. Receita
+        total_receita = sum(doc.to_dict().get('servicePrice', 0) for doc in receita_snapshot)
+        receita_formatada = f"{total_receita:.2f}".replace('.', ',')
+        
+        # 4. Gráfico
+        chart_data = {"data": "processed chart data here"} # Implemente sua lógica de contagem por dia aqui
+        
+        
+        # --- Retorno Consolidado ---
+        return DashboardDataResponse(
+            agendamentos_foco_valor=count_agendamentos_foco,
+            novos_clientes_valor=count_novos_clientes,
+            receita_estimada=receita_formatada,
+            chart_data=chart_data # Substitua pelo resultado real do seu processamento
+        )
+
+    except HTTPException as httpe:
+        raise httpe
+    except Exception as e:
+        logging.exception(f"Erro no endpoint consolidado do dashboard: {e}")
+        raise HTTPException(status_code=500, detail="Erro interno ao carregar dados do dashboard.")
