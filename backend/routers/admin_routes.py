@@ -64,29 +64,33 @@ class CalendarEvent(BaseModel):
 
 class ReagendamentoBody(BaseModel):
     new_start_time: str 
-
+    
 class PayerIdentification(BaseModel):
-    type: str
-    number: str
+ type: str
+ number: str
 
 class PayerData(BaseModel):
-    email: EmailStr
-    identification: Optional[dict] = None
+ email: EmailStr
+ # AQUI ESTÁ A CORREÇÃO:
+ # Trocamos 'Optional[dict]' por 'Optional[PayerIdentification]'.
+ # O Pydantic agora vai converter o dict em um objeto.
+ identification: Optional[PayerIdentification] = None 
+# --- <<< FIM DA ALTERAÇÃO 1 >>> ---
 
 class UserPaidSignupPayload(BaseModel):
-    # Dados do Usuário
-    email: EmailStr
-    password: str = Field(..., min_length=6)
-    nome_salao: str = Field(..., min_length=2)
-    numero_whatsapp: str
-    
-    # Dados do Pagamento (do Brick)
-    token: Optional[str] = None
-    issuer_id: Optional[str] = None
-    payment_method_id: str
-    transaction_amount: float
-    installments: Optional[int] = None
-    payer: PayerData
+ # Dados do Usuário
+ email: EmailStr
+ password: str = Field(..., min_length=6)
+ nome_salao: str = Field(..., min_length=2)
+ numero_whatsapp: str
+ 
+ # Dados do Pagamento (do Brick)
+ token: Optional[str] = None
+ issuer_id: Optional[str] = None
+ payment_method_id: str
+ transaction_amount: float
+ installments: Optional[int] = None
+ payer: PayerData
 
 try:
     MP_ACCESS_TOKEN = os.environ.get("MERCADO_PAGO_ACCESS_TOKEN")
@@ -108,27 +112,21 @@ except Exception as e:
     mp_payment_client = None
 # --- <<< FIM DA ALTERAÇÃO >>> ---
 
-# --- <<< NOVO: ENDPOINT PÚBLICO DE CADASTRO COM PAGAMENTO >>> ---
 # --- <<< NOVO: ENDPOINT PÚBLICO DE CADASTRO PAGO DIRETO >>> ---
 @auth_router.post("/criar-conta-paga", status_code=status.HTTP_201_CREATED)
 async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
     """
     Endpoint PÚBLICO para criar conta e processar pagamento transparente.
-    1. Valida se o e-mail e WhatsApp já existem.
-    2. Cria o usuário no Firebase Auth.
-    3. Cria o documento do salão no Firestore com status "pending".
-    4. Processa o pagamento IMEDIATAMENTE usando o token do cartão.
-    5. Se pagamento APROVADO: Atualiza o status no Firestore para "active".
-    6. Se pagamento REJEITADO: Faz rollback (deleta user e salão) e retorna o erro.
-    7. Se pagamento PENDENTE: Retorna sucesso (webhook vai ativar depois).
+    Lida com fluxos de Cartão (transparente) e PIX (retorna QR Code).
     """
     
     if not mp_payment_client:
-        raise HTTPException(status_code=503, detail="Serviço de pagamento indisponível.")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Serviço de pagamento indisponível.")
 
     salao_id = payload.numero_whatsapp
-    
-    # --- Passo 1: Validação (Idêntico ao anterior) ---
+    uid = None # Inicializa para o bloco try/except final
+
+    # --- Passo 1: Validação de Conflito (e-mail e WhatsApp) ---
     try:
         admin_auth.get_user_by_email(payload.email)
         raise HTTPException(
@@ -136,7 +134,7 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
             detail="Este e-mail já está cadastrado. Tente fazer login."
         )
     except admin_auth.UserNotFoundError:
-        pass # OK
+        pass 
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Erro ao verificar e-mail: {e}")
 
@@ -150,9 +148,7 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Erro ao verificar dados: {e}")
 
-    
-    # --- Passo 2: Criar Usuário no Firebase Auth (Idêntico) ---
-    uid = None
+    # --- Passo 2: Criar Usuário no Firebase Auth ---
     try:
         logging.info(f"Criando usuário no Auth para {payload.email}...")
         new_user = admin_auth.create_user(
@@ -164,8 +160,8 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Erro ao criar usuário: {e}")
 
-    
-    # --- Passo 3: Criar Salão no Firestore (como "pending") (Idêntico) ---
+    # --- Passo 3: Criar Salão no Firestore (como "pending") ---
+    salao_doc_ref = db.collection("cabeleireiros").document(salao_id)
     try:
         logging.info(f"Criando documento do salão (pending) com ID: {salao_id} para UID: {uid}...")
         now = datetime.now(pytz.utc)
@@ -182,7 +178,6 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
             "mercadopago_customer_id": None,
             "google_sync_enabled": False,
         }
-        salao_doc_ref = db.collection("cabeleireiros").document(salao_id)
         salao_doc_ref.set(salao_data)
         
     except Exception as e:
@@ -190,85 +185,134 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
         admin_auth.delete_user(uid)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Erro ao salvar dados do salão: {e}")
 
-    
-    # --- Passo 4: Processar o Pagamento (Lógica Nova!) ---
+    # --- Passo 4: Processar o Pagamento (Lógica Dividida) ---
     try:
-        logging.info(f"Processando pagamento direto para {salao_id}...")
-        
-        # URL do Webhook (ainda necessária para pagamentos pendentes)
+        logging.info(f"Processando pagamento para {salao_id} via {payload.payment_method_id}...")
         notification_url = f"{RENDER_API_URL}/webhooks/mercado-pago"
         
-        payment_data = {
-            "transaction_amount": payload.transaction_amount,
-            "token": payload.token,
-            "description": "Assinatura Horalis Pro (R$ 19,90)",
-            "installments": payload.installments,
-            "payment_method_id": payload.payment_method_id,
-            "issuer_id": payload.issuer_id,
-            "payer": {
-                "email": payload.payer.email,
-                "identification": {
-                    "type": payload.payer.identification.type,
-                    "number": payload.payer.identification.number
-                }
-            },
-            "external_reference": salao_id, # Chave do Webhook
-            "notification_url": notification_url, 
-        }
+        # Dados de identificação do pagador (corretamente como objeto PayerIdentification)
+        payer_identification_data = {
+            "type": payload.payer.identification.type,
+            "number": payload.payer.identification.number
+        } if payload.payer.identification else None
 
-        # Chama a API de Pagamentos do MP
-        payment_response = mp_payment_client.create(payment_data)
-        logging.info(f"Resposta do Pagamento MP: {payment_response}")
+        # --- CASO 1: PAGAMENTO COM PIX ---
+        if payload.payment_method_id == 'pix':
+            logging.info(f"Criando pagamento PIX para {salao_id}...")
+            
+            payment_data = {
+                "transaction_amount": payload.transaction_amount,
+                "description": "Assinatura Horalis Pro (PIX)",
+                "payment_method_id": "pix",
+                "payer": {
+                    "email": payload.payer.email,
+                    "identification": payer_identification_data
+                },
+                "external_reference": salao_id, 
+                "notification_url": notification_url, 
+            }
+            
+            payment_response = mp_payment_client.create(payment_data)
+            
+            if payment_response["status"] not in [200, 201]:
+                raise Exception(f"Erro MercadoPago (PIX): {payment_response.get('response').get('message', 'Erro desconhecido ao processar PIX')}")
 
-        if payment_response["status"] not in [200, 201]:
-            # Erro antes de processar
-             raise Exception(f"Erro MercadoPago: {payment_response.get('response')}")
+            payment_result = payment_response["response"]
+            qr_code_data = payment_result.get("point_of_interaction", {}).get("transaction_data", {})
+            
+            qr_code_b64 = qr_code_data.get("qr_code_base64")
+            qr_code_str = qr_code_data.get("qr_code")
 
-        payment_status = payment_response["response"].get("status")
-        
-        # --- Passo 5: Tratar Resposta do Pagamento ---
-        
-        if payment_status == "approved":
-            # SUCESSO! Ativa a conta imediatamente.
-            logging.info(f"Pagamento APROVADO instantaneamente para {salao_id}.")
-            new_paid_until = datetime.now(pytz.utc) + timedelta(days=30)
+            if not qr_code_b64 or not qr_code_str:
+                logging.error("Resposta do PIX não continha dados do QR Code.")
+                raise Exception("Falha ao gerar QR Code do PIX.")
+
+            # Salva o ID do pagamento pendente para o webhook
             salao_doc_ref.update({
-                "subscriptionStatus": "active",
-                "paidUntil": new_paid_until,
-                "subscriptionLastUpdated": firestore.SERVER_TIMESTAMP,
-                "mercadopagoLastPaymentId": payment_response["response"].get("id")
+                "mercadopagoLastPaymentId": payment_result.get("id")
             })
-            return {"status": "approved", "message": "Pagamento aprovado e conta criada!"}
+            
+            # Retorna os dados para o frontend exibir o QR Code
+            return {
+                "status": "pending_pix",
+                "message": "PIX gerado. Aguardando pagamento.",
+                "payment_data": {
+                    "qr_code": qr_code_str,
+                    "qr_code_base64": qr_code_b64,
+                    "payment_id": payment_result.get("id")
+                }
+            }
         
-        elif payment_status in ["in_process", "pending"]:
-            # PENDENTE. Usuário precisa esperar (ex: boleto). Webhook vai ativar.
-            logging.info(f"Pagamento PENDENTE para {salao_id}.")
-            return {"status": "pending", "message": "Pagamento em processamento. Sua conta será ativada em breve."}
-        
-        else:
-            # REJEITADO. (Ex: "Fundos insuficientes", "Cartão recusado")
-            logging.warning(f"Pagamento REJEITADO para {salao_id}.")
-            error_detail = payment_response["response"].get("status_detail", "Pagamento rejeitado pelo MercadoPago.")
-            # Desfaz tudo (Rollback)
-            admin_auth.delete_user(uid)
-            salao_doc_ref.delete()
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error_detail)
+        # --- CASO 2: PAGAMENTO COM CARTÃO (ou outros métodos) ---
+        else: # Assumimos que é um método com token (Cartão)
+            logging.info(f"Criando pagamento com Cartão ({payload.payment_method_id}) para {salao_id}...")
+            
+            payment_data = {
+                "transaction_amount": payload.transaction_amount,
+                "token": payload.token,
+                "description": "Assinatura Horalis Pro (Cartão)",
+                "installments": payload.installments,
+                "payment_method_id": payload.payment_method_id,
+                "issuer_id": payload.issuer_id,
+                "payer": {
+                    "email": payload.payer.email,
+                    "identification": payer_identification_data
+                },
+                "external_reference": salao_id, 
+                "notification_url": notification_url, 
+            }
+
+            payment_response = mp_payment_client.create(payment_data)
+
+            if payment_response["status"] not in [200, 201]:
+                error_msg = payment_response.get('response', {}).get('message', 'Erro desconhecido ao processar o cartão.')
+                raise Exception(f"Erro MercadoPago (Cartão): {error_msg}")
+
+            payment_status = payment_response["response"].get("status")
+            
+            # --- Passo 5: Tratar Resposta do Pagamento Cartão ---
+            if payment_status == "approved":
+                logging.info(f"Pagamento APROVADO instantaneamente para {salao_id}.")
+                new_paid_until = datetime.now(pytz.utc) + timedelta(days=30)
+                salao_doc_ref.update({
+                    "subscriptionStatus": "active",
+                    "paidUntil": new_paid_until,
+                    "subscriptionLastUpdated": firestore.SERVER_TIMESTAMP,
+                    "mercadopagoLastPaymentId": payment_response["response"].get("id")
+                })
+                return {"status": "approved", "message": "Pagamento aprovado e conta criada!"}
+            
+            elif payment_status in ["in_process", "pending"]:
+                logging.info(f"Pagamento PENDENTE para {salao_id}.")
+                return {"status": "pending", "message": "Pagamento em processamento. Sua conta será ativada em breve."}
+            
+            else:
+                logging.warning(f"Pagamento REJEITADO para {salao_id}.")
+                error_detail = payment_response["response"].get("status_detail", "Pagamento rejeitado pelo MercadoPago.")
+                # Desfaz tudo (Rollback)
+                admin_auth.delete_user(uid)
+                salao_doc_ref.delete()
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error_detail)
 
     except Exception as e:
         # Rollback Completo se algo falhar
-        logging.error(f"Erro ao processar pagamento: {e}. Fazendo rollback total...")
-        try:
-            admin_auth.delete_user(uid)
-        except Exception as auth_err:
-            logging.error(f"Falha no rollback do Auth: {auth_err}")
-            
+        error_message = str(e)
+        logging.error(f"Erro ao processar pagamento: {error_message}. Fazendo rollback total...")
+        
+        # Tenta o rollback do Firebase Auth
+        if uid:
+            try:
+                admin_auth.delete_user(uid)
+            except Exception as auth_err:
+                logging.error(f"Falha no rollback do Auth: {auth_err}")
+                
+        # Tenta o rollback do Firestore
         try:
             db.collection("cabeleireiros").document(salao_id).delete()
         except Exception as db_err:
             logging.error(f"Falha no rollback do Firestore: {db_err}")
             
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Erro ao processar pagamento: {e}")    
-    # --- <<< ADICIONADO: ENDPOINT PARA CRIAR ASSINATURA >>> ---
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Erro ao processar pagamento: {error_message}")
 # --- <<< ENDPOINT PARA CRIAR ASSINATURA (CORREÇÃO RADICAL) >>> ---
 # Esta rota está protegida (usa o 'router' principal)
 @router.post("/pagamentos/criar-assinatura", status_code=status.HTTP_201_CREATED)
