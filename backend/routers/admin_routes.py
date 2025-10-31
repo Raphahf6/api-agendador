@@ -71,7 +71,7 @@ class PayerIdentification(BaseModel):
 
 class PayerData(BaseModel):
     email: EmailStr
-    identification: PayerIdentification
+    identification: Optional[dict] = None
 
 class UserPaidSignupPayload(BaseModel):
     # Dados do Usuário
@@ -81,11 +81,11 @@ class UserPaidSignupPayload(BaseModel):
     numero_whatsapp: str
     
     # Dados do Pagamento (do Brick)
-    token: str
-    issuer_id: str
+    token: Optional[str] = None
+    issuer_id: Optional[str] = None
     payment_method_id: str
     transaction_amount: float
-    installments: int
+    installments: Optional[int] = None
     payer: PayerData
 
 try:
