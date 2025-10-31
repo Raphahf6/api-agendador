@@ -995,3 +995,41 @@ async def google_auth_callback_handler(
         logging.exception(f"Erro CRÍTICO durante o callback do Google OAuth: {e}")
         frontend_error_url = f"https://horalis.app/painel/{state}/configuracoes?sync=error"
         return RedirectResponse(frontend_error_url)
+    
+@auth_router.get("/check-payment-status/{payment_id}", response_model=dict[str, str])
+async def check_payment_status(payment_id: str):
+    """
+    Endpoint PÚBLICO usado pelo frontend (polling) para verificar o status
+    da assinatura no Firestore, usando o ID do pagamento gerado (PIX/Boleto).
+    """
+    logging.info(f"Polling recebido para verificar Payment ID: {payment_id}")
+    
+    try:
+        # 1. Buscar o salão que tem este mercadopagoLastPaymentId
+        query = db.collection('cabeleireiros').where(
+            filter=firestore.FieldFilter('mercadopagoLastPaymentId', '==', payment_id)
+        ).limit(1)
+        client_doc_list = list(query.stream())
+        
+        if not client_doc_list:
+            # Se não encontrou, talvez o pagamento ainda não tenha sido registrado pelo webhook (ou o ID está errado)
+            return {"status": "pending", "message": "Aguardando registro inicial ou pagamento."}
+        
+        salao_doc = client_doc_list[0]
+        current_status = salao_doc.get('subscriptionStatus')
+
+        if current_status == 'active':
+            # O webhook já passou e ativou a conta!
+            return {"status": "approved", "message": "Pagamento confirmado. Login liberado."}
+        elif current_status in ['pending', 'trialing']:
+            # Ainda pendente (PIX ainda não foi pago)
+            return {"status": "pending", "message": "Aguardando confirmação do PIX."}
+        else:
+            # Rejeitado, cancelado, etc.
+            return {"status": current_status, "message": "Pagamento não aprovado. Tente novamente."}
+
+    except Exception as e:
+        logging.exception(f"Erro no Polling de Pagamento para {payment_id}: {e}")
+        # Retorna 'pending' por segurança, para não interromper o polling
+        return {"status": "pending", "message": "Erro de comunicação. Tente o login em instantes."}
+# --- <<< FIM DO ENDPOINT DE POLLING >>> ---
