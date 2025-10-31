@@ -50,7 +50,11 @@ GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET")
 SCOPES = ['https://www.googleapis.com/auth/calendar']
 RENDER_API_URL = "https://api-agendador.onrender.com/api/v1" 
 REDIRECT_URI = f"{RENDER_API_URL}/api/v1/admin/google/auth/callback"
-
+class EmailPromocionalBody(BaseModel):
+    cliente_id: str
+    salao_id: str
+    subject: str = Field(..., min_length=5)
+    message: str = Field(..., min_length=10)
 class ClienteListItem(BaseModel):
     id: str
     nome: str
@@ -1163,3 +1167,81 @@ async def get_cliente_details_and_history(
     except Exception as e:
         logging.exception(f"Erro CRÍTICO ao buscar detalhes do cliente {cliente_id}: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno ao buscar detalhes do cliente.")
+    
+@router.post("/clientes/enviar-promocional", status_code=status.HTTP_200_OK)
+async def send_promotional_email_endpoint(
+    body: EmailPromocionalBody,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Busca o perfil do cliente no Firestore e envia um e-mail promocional personalizado.
+    Também registra o envio no perfil do cliente (CRM).
+    """
+    user_uid = current_user.get("uid")
+    logging.info(f"Admin {current_user.get('email')} solicitou envio promocional para o cliente {body.cliente_id}.")
+
+    try:
+        # --- 1. Busca os Dados CRM e do Salão ---
+        
+        # Busca o perfil do cliente
+        cliente_doc_ref = db.collection('cabeleireiros').document(body.salao_id).collection('clientes').document(body.cliente_id)
+        cliente_doc = cliente_doc_ref.get()
+
+        if not cliente_doc.exists:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Perfil do cliente não encontrado.")
+
+        cliente_data = cliente_doc.to_dict()
+        
+        # Pega os dados essenciais do cliente
+        customer_email = cliente_data.get('email')
+        customer_name = cliente_data.get('nome')
+
+        if not customer_email:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="E-mail do cliente ausente no perfil.")
+            
+        # Pega o nome do salão (remetente)
+        salon_data = get_hairdresser_data_from_db(body.salao_id)
+        salon_name = salon_data.get("nome_salao", "Seu Salão")
+
+        
+        # --- 2. Envio do E-mail ---
+        email_sent = email_service.send_promotional_email_to_customer(
+            customer_email=customer_email,
+            customer_name=customer_name,
+            salon_name=salon_name,
+            custom_subject=body.subject,
+            custom_message_html=body.message # O frontend enviará HTML (pode ser texto simples também)
+        )
+        
+        if not email_sent:
+            raise Exception("O serviço de e-mail falhou ao enviar a mensagem.")
+
+        # --- 3. Registro no Histórico do Cliente (CRM) ---
+        # Adiciona uma nota/registro no documento do cliente
+        try:
+            registro_ref = cliente_doc_ref.collection('registros').document()
+            registro_ref.set({
+                "tipo": "Promocional",
+                "data_envio": firestore.SERVER_TIMESTAMP,
+                "assunto": body.subject,
+                "enviado_por": current_user.get('email'),
+                "message_preview": body.message[:100] + "..." # Salva um preview
+            })
+        except Exception as e:
+            logging.error(f"Falha ao registrar envio promocional no CRM: {e}")
+            # Continua, pois o e-mail já foi enviado
+            
+        logging.info(f"E-mail promocional enviado e registrado para {customer_email}.")
+        
+        return {"message": "E-mail promocional enviado com sucesso!"}
+
+    except HTTPException as httpe: 
+        raise httpe
+    except Exception as e:
+        # Se falhou, tentamos dar ao usuário uma mensagem útil
+        detail_msg = str(e)
+        if "E-mail do cliente ausente" in detail_msg:
+             detail_msg = "O perfil do cliente não possui um e-mail cadastrado."
+             
+        logging.exception(f"Erro ao enviar e-mail promocional para cliente {body.cliente_id}: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=detail_msg)

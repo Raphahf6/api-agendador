@@ -17,11 +17,10 @@ except ImportError:
         logging.error("Nem 'zoneinfo' nem 'pytz' encontrados. A conversão de fuso horário falhará.")
         ZoneInfo = lambda x: None # Define um 'falso' ZoneInfo
 
-load_dotenv()  # Carrega variáveis de ambiente do .env
+load_dotenv() 
 logging.basicConfig(level=logging.INFO)
 
 # --- Constante de Fuso Horário ---
-# Define o fuso de destino (Onde o salão está)
 try:
     TARGET_TZ = ZoneInfo("America/Sao_Paulo")
 except Exception:
@@ -33,7 +32,7 @@ except Exception:
 def _format_time_to_brt(start_time_iso: str) -> str:
     """Helper para converter ISO string para 'dd/MM/YYYY às HH:mm' (BRT)."""
     if not TARGET_TZ:
-        return start_time_iso # Retorna original se o fuso falhou
+        return start_time_iso
     try:
         start_time_dt_aware = datetime.fromisoformat(start_time_iso)
         start_time_dt_local = start_time_dt_aware.astimezone(TARGET_TZ)
@@ -44,7 +43,20 @@ def _format_time_to_brt(start_time_iso: str) -> str:
 # --- Fim da Função HELPER ---
 
 
-# --- FUNÇÃO 1: E-mail para o SALÃO (Sua função original, agora usa o HELPER) ---
+# --- Função HELPER INTERNA para o CSS Base ---
+def _get_base_css() -> str:
+    """Retorna o CSS base para os e-mails dos clientes."""
+    return """
+        body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f4f4f4; color: #333; margin: 0; padding: 0; }
+        .container { max-width: 600px; margin: 20px auto; background-color: #ffffff; padding: 30px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+        h1 { color: #7c3aed; font-size: 24px; border-bottom: 2px solid #eee; padding-bottom: 10px; }
+        p { line-height: 1.6; margin-bottom: 15px; }
+        .detail { background-color: #f9f6ff; padding: 10px; border-radius: 4px; border-left: 5px solid #a78bfa; }
+        .footer { text-align: center; margin-top: 20px; font-size: 12px; color: #888; }
+    """
+    
+    
+# --- FUNÇÃO 1: E-mail para o SALÃO ---
 def send_confirmation_email_to_salon(
     salon_email: str, 
     salon_name: str, 
@@ -57,12 +69,10 @@ def send_confirmation_email_to_salon(
     Envia um e-mail de confirmação para o SALÃO sobre o novo agendamento.
     """
     
-    # Formata a data para leitura (ex: 24 de Outubro de 2025 às 14:30)
     formatted_time = _format_time_to_brt(start_time_iso)
 
     subject = f"✅ NOVO AGENDAMENTO para {salon_name}: {service_name} às {formatted_time}"
     
-    # Corpo do e-mail em HTML (moderno e responsivo)
     html_content = f"""
     <!DOCTYPE html>
     <html lang="pt-BR">
@@ -115,7 +125,7 @@ def send_confirmation_email_to_salon(
         return False
 
 
-# --- <<< ADICIONADO: FUNÇÃO 2: E-mail de Confirmação para o CLIENTE >>> ---
+# --- FUNÇÃO 2: E-mail de Confirmação para o CLIENTE ---
 def send_confirmation_email_to_customer(
     customer_email: str,
     customer_name: str,
@@ -172,12 +182,12 @@ def send_confirmation_email_to_customer(
         logging.error(f"ERRO RESEND: Falha ao enviar e-mail (para CLIENTE) {customer_email}: {e}")
         return False
 
-# --- <<< ADICIONADO: FUNÇÃO 3: E-mail de Cancelamento para o CLIENTE >>> ---
+# --- FUNÇÃO 3: E-mail de Cancelamento para o CLIENTE ---
 def send_cancellation_email_to_customer(
     customer_email: str,
     customer_name: str,
     service_name: str,
-    start_time_iso: str, # Hora original
+    start_time_iso: str, 
     salon_name: str
 ) -> bool:
     """
@@ -231,7 +241,7 @@ def send_cancellation_email_to_customer(
         logging.error(f"ERRO RESEND: Falha ao enviar e-mail de CANCELAMENTO (para CLIENTE) {customer_email}: {e}")
         return False
 
-# --- <<< ADICIONADO: FUNÇÃO 4: E-mail de Reagendamento para o CLIENTE >>> ---
+# --- FUNÇÃO 4: E-mail de Reagendamento para o CLIENTE ---
 def send_reschedule_email_to_customer(
     customer_email: str,
     customer_name: str,
@@ -299,25 +309,12 @@ def send_reschedule_email_to_customer(
         logging.error(f"ERRO RESEND: Falha ao enviar e-mail de REAGENDAMENTO (para CLIENTE) {customer_email}: {e}")
         return False
 
-# --- <<< ADICIONADO: Helper CSS Base para os templates >>> ---
-def _get_base_css() -> str:
-    """Retorna o CSS base para os e-mails dos clientes."""
-    return """
-        body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f4f4f4; color: #333; margin: 0; padding: 0; }
-        .container { max-width: 600px; margin: 20px auto; background-color: #ffffff; padding: 30px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
-        h1 { color: #7c3aed; font-size: 24px; border-bottom: 2px solid #eee; padding-bottom: 10px; }
-        p { line-height: 1.6; margin-bottom: 15px; }
-        .detail { background-color: #f9f6ff; padding: 10px; border-radius: 4px; border-left: 5px solid #a78bfa; }
-        .footer { text-align: center; margin-top: 20px; font-size: 12px; color: #888; }
-    """
-    
-    
-# --- <<< ADICIONADO: FUNÇÃO 5: E-mail de Lembrete para o CLIENTE >>> ---
+# --- FUNÇÃO 5: E-mail de Lembrete para o CLIENTE ---
 def send_reminder_email_to_customer(
     customer_email: str,
     customer_name: str,
     service_name: str,
-    start_time_iso: str, # Hora do agendamento
+    start_time_iso: str,
     salon_name: str
 ) -> bool:
     """
@@ -369,5 +366,64 @@ def send_reminder_email_to_customer(
         return True
     except Exception as e:
         logging.error(f"ERRO RESEND: Falha ao enviar e-mail de LEMBRETE (para CLIENTE) {customer_email}: {e}")
+        return False
+        
+# --- <<< ADICIONADO: FUNÇÃO 6: E-mail Promocional/Personalizado >>> ---
+def send_promotional_email_to_customer(
+    customer_email: str,
+    customer_name: str,
+    salon_name: str,
+    custom_subject: str,
+    custom_message_html: str
+) -> bool:
+    """
+    Envia um e-mail PROMOCIONAL/PERSONALIZADO diretamente da tela de CRM.
+    """
+    
+    # Define o assunto do e-mail
+    subject = f"{custom_subject} - Exclusivo {salon_name}"
+
+    html_content = f"""
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+            {_get_base_css()}
+            h1 {{ color: #E91E63; }} /* Rosa/Magenta para promoções */
+            .detail {{ background-color: #FCE4EC; border-left: 5px solid #FF80AB; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>{custom_subject}</h1>
+            <p>Olá, <strong>{customer_name}</strong>!</p>
+            <p>A equipe do <strong>{salon_name}</strong> tem uma novidade especial para você:</p>
+            
+            <div class="detail" style="margin-top: 20px; margin-bottom: 20px;">
+                {custom_message_html}
+            </div>
+            
+            <p>Esperamos te ver em breve!</p>
+        </div>
+        <div class="footer">
+            Este e-mail foi enviado automaticamente pelo sistema Horalis.
+        </div>
+    </body>
+    </html>
+    """
+    
+    try:
+        result = resend.Emails.send({
+            "from": "Horalis <Horalis@rebdigitalsolucoes.com.br>", # Remetente mais genérico para promo
+            "to": [customer_email],
+            "subject": subject,
+            "html": html_content,
+        })
+        logging.info(f"E-mail PROMOCIONAL enviado com sucesso para {customer_email}. ID: {result.get('id')}")
+        return True
+    except Exception as e:
+        logging.error(f"ERRO RESEND: Falha ao enviar e-mail PROMOCIONAL para {customer_email}: {e}")
         return False
 # --- <<< FIM DA ADIÇÃO >>> ---
