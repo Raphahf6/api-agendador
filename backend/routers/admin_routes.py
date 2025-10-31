@@ -1091,3 +1091,75 @@ async def list_crm_clients(
              raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Salão não encontrado.")
         
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno ao buscar clientes.")
+    
+class HistoricoAgendamentoItem(BaseModel):
+    id: str
+    serviceName: str
+    startTime: datetime
+    durationMinutes: int
+    servicePrice: Optional[float] = None
+    status: str
+    # Adicione mais campos do agendamento se precisar
+    
+class ClienteDetailsResponse(BaseModel):
+    # Detalhes do Cliente (Perfil CRM)
+    cliente: dict[str, Any] # Dicionário com todos os dados do cliente (nome, email, etc.)
+    # Histórico
+    historico_agendamentos: List[HistoricoAgendamentoItem]
+
+
+@router.get("/clientes/{salao_id}/detalhes-crm/{cliente_id}", response_model=ClienteDetailsResponse)
+async def get_cliente_details_and_history(
+    salao_id: str,
+    cliente_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Busca os detalhes do perfil do cliente e o histórico de agendamentos associados.
+    """
+    user_email = current_user.get("email")
+    logging.info(f"Admin {user_email} buscando detalhes do cliente: {cliente_id} no salão {salao_id}")
+
+    try:
+        # 1. Busca os dados do Perfil CRM (Tabela de Clientes)
+        cliente_doc_ref = db.collection('cabeleireiros').document(salao_id).collection('clientes').document(cliente_id)
+        cliente_doc = cliente_doc_ref.get()
+
+        if not cliente_doc.exists:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Perfil do cliente não encontrado.")
+
+        cliente_data = cliente_doc.to_dict()
+        
+        # 2. Busca o Histórico de Agendamentos (Tabela de Agendamentos)
+        agendamentos_ref = db.collection('cabeleireiros').document(salao_id).collection('agendamentos')
+        
+        # Filtrar agendamentos onde o campo 'clienteId' é igual ao cliente_id
+        history_query = agendamentos_ref.where('clienteId', '==', cliente_id).order_by('startTime', direction=firestore.Query.DESCENDING)
+        
+        docs = history_query.stream()
+        
+        historico = []
+        for doc in docs:
+            data = doc.to_dict()
+            historico.append(HistoricoAgendamentoItem(
+                id=doc.id,
+                serviceName=data.get('serviceName', 'Serviço'),
+                startTime=data.get('startTime'), # Firestore Timestamp já resolve
+                durationMinutes=data.get('durationMinutes', 0),
+                servicePrice=data.get('servicePrice'),
+                status=data.get('status', 'confirmado')
+            ))
+            
+        logging.info(f"Histórico de {len(historico)} agendamentos encontrado para o cliente {cliente_id}.")
+
+        # 3. Retorna a resposta completa
+        return ClienteDetailsResponse(
+            cliente=cliente_data,
+            historico_agendamentos=historico
+        )
+
+    except HTTPException as httpe: 
+        raise httpe
+    except Exception as e:
+        logging.exception(f"Erro CRÍTICO ao buscar detalhes do cliente {cliente_id}: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno ao buscar detalhes do cliente.")
