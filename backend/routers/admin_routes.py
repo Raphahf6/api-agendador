@@ -1579,7 +1579,7 @@ async def send_mass_marketing_email(
 ):
     """
     Recebe a requisição do frontend, delega a tarefa de envio para o background
-    e retorna imediatamente 202 Accepted (sucesso).
+    e retorna imediatamente 202 Accepted (sucesso), garantindo um corpo JSON válido.
     """
     
     user_email_admin = current_user.get("email")
@@ -1587,10 +1587,10 @@ async def send_mass_marketing_email(
 
     # 1. Busca os dados essenciais do salão para a thread
     try:
-        # Tenta buscar os dados do salão apenas para garantir a existência e o nome
         salon_data = get_hairdresser_data_from_db(body.salao_id)
         if not salon_data:
              raise HTTPException(status_code=404, detail="Salão não encontrado.")
+        # O nome do salão é necessário para a mensagem de sucesso
         salon_name = salon_data.get("nome_salao", "Seu Salão")
     except HTTPException as e:
         raise e
@@ -1612,8 +1612,8 @@ async def send_mass_marketing_email(
         logging.error(f"Falha CRÍTICA ao iniciar Background Task: {e}")
         raise HTTPException(status_code=500, detail="O servidor não conseguiu iniciar o processo de envio.")
     
-    # 3. Retorna SUCESSO (202 ACCEPTED) imediatamente
+    # 3. Retorna SUCESSO (202 ACCEPTED) com um corpo JSON explícito
     return {
         "status": "Processamento Aceito",
-        "message": f"Disparo iniciado em segundo plano para {salon_name}. Os e-mails serão processados em breve."
+        "message": f"Disparo de e-mail iniciado em segundo plano para {salon_name}. Retorne ao painel."
     }
