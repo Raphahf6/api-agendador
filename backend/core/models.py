@@ -92,3 +92,4 @@ class ManualAppointmentData(BaseModel):
     service_name: str = Field(..., min_length=3)
     service_id: Optional[str] = None
     service_price:Optional[float] = None
+    cliente_id: Optional[str] = None
