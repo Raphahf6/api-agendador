@@ -79,7 +79,18 @@ class ReagendamentoBody(BaseModel):
 class PayerIdentification(BaseModel):
  type: str
  number: str
+ 
+class NotaManualBody(BaseModel):
+    salao_id: str
+    cliente_id: str
+    nota_texto: str = Field(..., min_length=1)
 
+class TimelineItem(BaseModel):
+    id: str
+    tipo: str # Ex: 'Agendamento', 'NotaManual', 'Promocional'
+    data_evento: datetime # O campo unificado para ordenação
+    dados: Any # O conteúdo (seja do agendamento, da nota, ou do e-mail)
+    
 class PayerData(BaseModel):
  email: EmailStr
  # AQUI ESTÁ A CORREÇÃO:
@@ -1119,54 +1130,114 @@ async def get_cliente_details_and_history(
     current_user: dict = Depends(get_current_user)
 ):
     """
-    Busca os detalhes do perfil do cliente e o histórico de agendamentos associados.
+    Busca os detalhes do perfil do cliente E A TIMELINE COMPLETA 
+    (Agendamentos + Notas Manuais + Registros de E-mail).
     """
     user_email = current_user.get("email")
-    logging.info(f"Admin {user_email} buscando detalhes do cliente: {cliente_id} no salão {salao_id}")
+    logging.info(f"Admin {user_email} buscando detalhes e timeline do cliente: {cliente_id}")
 
     try:
-        # 1. Busca os dados do Perfil CRM (Tabela de Clientes)
+        timeline_items = []
+        
+        # 1. Busca os dados do Perfil CRM
         cliente_doc_ref = db.collection('cabeleireiros').document(salao_id).collection('clientes').document(cliente_id)
         cliente_doc = cliente_doc_ref.get()
 
         if not cliente_doc.exists:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Perfil do cliente não encontrado.")
-
+        
         cliente_data = cliente_doc.to_dict()
-        
-        # 2. Busca o Histórico de Agendamentos (Tabela de Agendamentos)
-        agendamentos_ref = db.collection('cabeleireiros').document(salao_id).collection('agendamentos')
-        
-        # Filtrar agendamentos onde o campo 'clienteId' é igual ao cliente_id
-        history_query = agendamentos_ref.where('clienteId', '==', cliente_id).order_by('startTime', direction=firestore.Query.DESCENDING)
-        
-        docs = history_query.stream()
-        
-        historico = []
-        for doc in docs:
-            data = doc.to_dict()
-            historico.append(HistoricoAgendamentoItem(
-                id=doc.id,
-                serviceName=data.get('serviceName', 'Serviço'),
-                startTime=data.get('startTime'), # Firestore Timestamp já resolve
-                durationMinutes=data.get('durationMinutes', 0),
-                servicePrice=data.get('servicePrice'),
-                status=data.get('status', 'confirmado')
-            ))
-            
-        logging.info(f"Histórico de {len(historico)} agendamentos encontrado para o cliente {cliente_id}.")
 
-        # 3. Retorna a resposta completa
+        # 2. Busca o Histórico de Agendamentos
+        agendamentos_ref = db.collection('cabeleireiros').document(salao_id).collection('agendamentos')
+        history_query = agendamentos_ref.where('clienteId', '==', cliente_id)
+        
+        agendamento_docs = history_query.stream()
+        for doc in agendamento_docs:
+            data = doc.to_dict()
+            if data.get('startTime'): # Só adiciona se tiver data
+                timeline_items.append(TimelineItem(
+                    id=doc.id,
+                    tipo="Agendamento",
+                    data_evento=data.get('startTime'), # Chave de ordenação
+                    dados=data 
+                ))
+
+        # 3. Busca o Histórico de Registros (Notas, E-mails)
+        registros_ref = cliente_doc_ref.collection('registros')
+        registro_docs = registros_ref.stream()
+        
+        for doc in registro_docs:
+            data = doc.to_dict()
+            if data.get('data_envio'): # Só adiciona se tiver data
+                timeline_items.append(TimelineItem(
+                    id=doc.id,
+                    tipo=data.get("tipo", "Registro"), # 'NotaManual', 'Promocional'
+                    data_evento=data.get('data_envio'), # Chave de ordenação
+                    dados=data
+                ))
+
+        # 4. Ordena a timeline combinada pela data (mais recente primeiro)
+        timeline_items.sort(key=lambda item: item.data_evento, reverse=True)
+        
+        logging.info(f"Timeline de {len(timeline_items)} itens encontrada para o cliente {cliente_id}.")
+
+        # 5. Retorna a resposta completa
         return ClienteDetailsResponse(
             cliente=cliente_data,
-            historico_agendamentos=historico
+            historico_agendamentos=timeline_items # Reutiliza o campo 'historico_agendamentos' do Pydantic
         )
 
     except HTTPException as httpe: 
         raise httpe
     except Exception as e:
         logging.exception(f"Erro CRÍTICO ao buscar detalhes do cliente {cliente_id}: {e}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno ao buscar detalhes do cliente.")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno.")
+    
+
+
+@router.post("/clientes/adicionar-nota", status_code=status.HTTP_201_CREATED, response_model=TimelineItem)
+async def adicionar_nota_manual(
+    body: NotaManualBody,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Adiciona uma nota manual (registro) ao perfil de um cliente.
+    """
+    user_email = current_user.get("email")
+    logging.info(f"Admin {user_email} adicionando nota ao cliente {body.cliente_id} no salão {body.salao_id}.")
+    
+    try:
+        # Define o local de salvamento
+        nota_ref = db.collection('cabeleireiros').document(body.salao_id).collection('clientes').document(body.cliente_id).collection('registros').document()
+        
+        nota_data = {
+            "tipo": "NotaManual",
+            "data_envio": firestore.SERVER_TIMESTAMP, # Usamos 'data_envio' para ordenação
+            "texto": body.nota_texto,
+            "enviado_por": user_email
+        }
+        
+        # Salva no Firestore
+        nota_ref.set(nota_data)
+        
+        # Busca os dados salvos (para obter o timestamp real)
+        nota_salva = nota_ref.get().to_dict()
+
+        logging.info(f"Nota manual salva com ID: {nota_ref.id}")
+        
+        # Retorna o objeto completo para o frontend
+        return TimelineItem(
+            id=nota_ref.id,
+            tipo=nota_salva.get("tipo"),
+            data_evento=nota_salva.get("data_envio"),
+            dados=nota_salva
+        )
+        
+    except Exception as e:
+        logging.exception(f"Erro ao adicionar nota manual: {e}")
+        raise HTTPException(status_code=500, detail="Erro interno ao salvar nota.")
+    
     
 @router.post("/clientes/enviar-promocional", status_code=status.HTTP_200_OK)
 async def send_promotional_email_endpoint(
