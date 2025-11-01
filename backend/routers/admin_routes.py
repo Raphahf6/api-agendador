@@ -87,9 +87,9 @@ class NotaManualBody(BaseModel):
 
 class TimelineItem(BaseModel):
     id: str
-    tipo: str # Ex: 'Agendamento', 'NotaManual', 'Promocional'
-    data_evento: datetime # O campo unificado para ordenação
-    dados: Any # O conteúdo (seja do agendamento, da nota, ou do e-mail)
+    tipo: str  # Ex: 'Agendamento', 'NotaManual', 'Promocional'
+    data_evento: datetime # Data/Hora para ordenação
+    dados: dict[str, Any] # O conteúdo completo do registro/agendamento
     
 class PayerData(BaseModel):
  email: EmailStr
@@ -1119,8 +1119,8 @@ class HistoricoAgendamentoItem(BaseModel):
 class ClienteDetailsResponse(BaseModel):
     # Detalhes do Cliente (Perfil CRM)
     cliente: dict[str, Any] # Dicionário com todos os dados do cliente (nome, email, etc.)
-    # Histórico
-    historico_agendamentos: List[HistoricoAgendamentoItem]
+    # Agora a lista de histórico é o novo TimelineItem
+    historico_agendamentos: List[TimelineItem] # <<< MUDANÇA CRÍTICA: AGORA USA TimelineItem
 
 
 @router.get("/clientes/{salao_id}/detalhes-crm/{cliente_id}", response_model=ClienteDetailsResponse)
@@ -1155,11 +1155,11 @@ async def get_cliente_details_and_history(
         agendamento_docs = history_query.stream()
         for doc in agendamento_docs:
             data = doc.to_dict()
-            if data.get('startTime'): # Só adiciona se tiver data
+            if data.get('startTime'):
                 timeline_items.append(TimelineItem(
                     id=doc.id,
                     tipo="Agendamento",
-                    data_evento=data.get('startTime'), # Chave de ordenação
+                    data_evento=data.get('startTime'), # Firestore Timestamp
                     dados=data 
                 ))
 
@@ -1169,15 +1169,16 @@ async def get_cliente_details_and_history(
         
         for doc in registro_docs:
             data = doc.to_dict()
-            if data.get('data_envio'): # Só adiciona se tiver data
+            if data.get('data_envio'):
                 timeline_items.append(TimelineItem(
                     id=doc.id,
                     tipo=data.get("tipo", "Registro"), # 'NotaManual', 'Promocional'
-                    data_evento=data.get('data_envio'), # Chave de ordenação
+                    data_evento=data.get('data_envio'), # Firestore Timestamp
                     dados=data
                 ))
 
         # 4. Ordena a timeline combinada pela data (mais recente primeiro)
+        # O Pydantic serializa os Timestamps/datetime corretamente no retorno.
         timeline_items.sort(key=lambda item: item.data_evento, reverse=True)
         
         logging.info(f"Timeline de {len(timeline_items)} itens encontrada para o cliente {cliente_id}.")
@@ -1185,7 +1186,7 @@ async def get_cliente_details_and_history(
         # 5. Retorna a resposta completa
         return ClienteDetailsResponse(
             cliente=cliente_data,
-            historico_agendamentos=timeline_items # Reutiliza o campo 'historico_agendamentos' do Pydantic
+            historico_agendamentos=timeline_items
         )
 
     except HTTPException as httpe: 
@@ -1193,7 +1194,6 @@ async def get_cliente_details_and_history(
     except Exception as e:
         logging.exception(f"Erro CRÍTICO ao buscar detalhes do cliente {cliente_id}: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno.")
-    
 
 
 @router.post("/clientes/adicionar-nota", status_code=status.HTTP_201_CREATED, response_model=TimelineItem)
@@ -1221,16 +1221,15 @@ async def adicionar_nota_manual(
         # Salva no Firestore
         nota_ref.set(nota_data)
         
-        # Busca os dados salvos (para obter o timestamp real)
-        nota_salva = nota_ref.get().to_dict()
-
-        logging.info(f"Nota manual salva com ID: {nota_ref.id}")
+        # Busca os dados salvos (para obter o timestamp REAL)
+        # Necessário dar get() novamente após o set() para ter o SERVER_TIMESTAMP resolvido
+        nota_salva = nota_ref.get().to_dict() 
         
-        # Retorna o objeto completo para o frontend
+        # Pydantic serializa a data de forma segura, o frontend fará o parseISO
         return TimelineItem(
             id=nota_ref.id,
             tipo=nota_salva.get("tipo"),
-            data_evento=nota_salva.get("data_envio"),
+            data_evento=nota_salva.get("data_envio"), # Firestore Timestamp
             dados=nota_salva
         )
         
