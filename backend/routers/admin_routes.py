@@ -671,19 +671,27 @@ async def create_manual_appointment(
     manual_data: ManualAppointmentData,
     current_user: dict[str, Any] = Depends(get_current_user)
 ):
-    # ... (código sem alteração, exceto pela adição do logging sobre o e-mail) ...
-    user_email = current_user.get("email")
+    """Cria um agendamento manual, salva no Firestore, sincroniza Google, E AGORA ENVIA E-MAIL."""
+    
+    user_email = current_user.get("email") # E-mail do Admin
     salao_id = manual_data.salao_id 
-    customer_email_provided = manual_data.customer_email # <<< Pega o e-mail do cliente (pode ser None)
+    customer_email_provided = manual_data.customer_email 
     logging.info(f"Admin {user_email} criando agendamento manual para {salao_id}")
     
     try:
+        # 1. Validação e Coleta de Dados
         salon_data = get_hairdresser_data_from_db(salao_id)
         salon_name = salon_data.get("nome_salao", "Seu Salão")
+        salon_email_destino = salon_data.get('calendar_id') # E-mail do salão para notificação
 
+        # Cálculos de tempo
         start_time_dt = datetime.fromisoformat(manual_data.start_time)
         end_time_dt = start_time_dt + timedelta(minutes=manual_data.duration_minutes)
 
+        if not salon_email_destino:
+             logging.warning("E-mail de destino do salão não encontrado. Pulando notificação.")
+        
+        # 2. Dados do Agendamento (para o Firestore)
         agendamento_data = {
             "salaoId": salao_id,
             "salonName": salon_name,
@@ -692,39 +700,59 @@ async def create_manual_appointment(
             "startTime": start_time_dt,
             "endTime": end_time_dt,
             "customerName": manual_data.customer_name,
-            "customerPhone": manual_data.customer_phone or None, # Salva None se vazio
-            "customerEmail": customer_email_provided, # <<< ADICIONADO: Salva o e-mail (ou None)
+            "customerPhone": manual_data.customer_phone or None,
+            "customerEmail": customer_email_provided,
             "status": "confirmado",
             "createdBy": user_email,
             "createdAt": firestore.SERVER_TIMESTAMP,
             "reminderSent": False,
-            "serviceId": manual_data.service_id,       
+            "serviceId": manual_data.service_id,
             "servicePrice": manual_data.service_price,
+            "clienteId": manual_data.cliente_id or None # Novo campo CRM
         }
 
         agendamento_ref = db.collection('cabeleireiros').document(salao_id).collection('agendamentos').document()
         agendamento_ref.set(agendamento_data)
         logging.info(f"Agendamento manual criado no Firestore com ID: {agendamento_ref.id}")
 
-        # Sincronização Google (sem alteração)
-        google_event_id = None # Inicializa
-        if salon_data.get("google_sync_enabled") and salon_data.get("google_refresh_token"):
-            logging.info("Sincronização Google Ativa para agendamento manual.") # Log adicionado
+        # 3. Disparo do E-mail (CORREÇÃO APLICADA AQUI)
+        if customer_email_provided and salon_email_destino:
+            try:
+                # E-mail para o SALÃO
+                email_service.send_confirmation_email_to_salon(
+                    salon_email=salon_email_destino, salon_name=salon_name, 
+                    customer_name=manual_data.customer_name, client_phone=manual_data.customer_phone, 
+                    service_name=manual_data.service_name, start_time_iso=manual_data.start_time
+                )
+                # E-mail para o CLIENTE
+                email_service.send_confirmation_email_to_customer(
+                    customer_email=customer_email_provided, customer_name=manual_data.customer_name,
+                    service_name=manual_data.service_name, start_time_iso=manual_data.start_time,
+                    salon_name=salon_name
+                )
+                logging.info(f"E-mails de confirmação disparados com sucesso para o agendamento manual.")
+            except Exception as e:
+                logging.error(f"Erro CRÍTICO ao disparar e-mail no agendamento manual: {e}")
+        else:
+             logging.warning("E-mails de confirmação pulados. Cliente/Salão e-mail ausente.")
 
-            # <<< CORREÇÃO: Montar google_event_data corretamente >>>
+
+        # 4. Sincronização Google (Lógica idêntica)
+        google_event_id = None
+        if salon_data.get("google_sync_enabled") and salon_data.get("google_refresh_token"):
+            logging.info("Sincronização Google Ativa para agendamento manual.")
+
             google_event_data = {
                 "summary": f"{manual_data.service_name} - {manual_data.customer_name}",
                 "description": (
                     f"Agendamento via Horalis (Manual).\n"
                     f"Cliente: {manual_data.customer_name}\n"
                     f"Telefone: {manual_data.customer_phone or 'N/A'}\n"
-                    # Não incluímos e-mail na descrição por privacidade, a menos que você queira
                     f"Serviço: {manual_data.service_name}"
                 ),
-                "start_time_iso": start_time_dt.isoformat(), # Usa o datetime já calculado
-                "end_time_iso": end_time_dt.isoformat(),     # Usa o datetime já calculado
+                "start_time_iso": start_time_dt.isoformat(),
+                "end_time_iso": end_time_dt.isoformat(),
             }
-            # <<< FIM DA CORREÇÃO >>>
 
             try:
                 google_event_id = calendar_service.create_google_event_with_oauth(
@@ -735,11 +763,9 @@ async def create_manual_appointment(
                     agendamento_ref.update({"googleEventId": google_event_id})
                     logging.info(f"Agendamento manual salvo no Google Calendar. ID: {google_event_id}")
                 else:
-                    # Se create_google_event_with_oauth retornar None (falha interna lá)
                     logging.warning("Falha ao salvar agendamento manual no Google Calendar (função retornou None).")
             except Exception as e:
-                # Pega qualquer outra exceção durante a chamada ou update
-                logging.exception(f"Erro inesperado ao sync Google (manual): {e}") # <<< Alterado para exception para mais detalhes
+                logging.exception(f"Erro inesperado ao sync Google (manual): {e}")
         else:
             logging.info("Sincronização Google desativada. Pulando etapa para agendamento manual.")
 
