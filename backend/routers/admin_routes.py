@@ -5,7 +5,7 @@ import logging
 import os
 import re
 import pytz # <<< ADICIONADO (para o fuso do reagendamento)
-from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request,BackgroundTasks
 from fastapi.responses import RedirectResponse 
 from firebase_admin import firestore
 from typing import List, Optional, Any
@@ -1511,80 +1511,92 @@ class MarketingMassaBody(BaseModel):
     # Adicione filtros aqui no futuro (ex: segmentacao: str = "todos")
 # --- <<< FIM DO NOVO MODELO >>> ---
 
-
-# --- <<< NOVO ENDPOINT: ENVIO DE E-MAIL EM MASSA >>> ---
-@router.post("/marketing/enviar-massa", status_code=status.HTTP_202_ACCEPTED)
-async def send_mass_marketing_email(
-    body: MarketingMassaBody,
-    current_user: dict = Depends(get_current_user)
-):
+def _process_mass_email_send(salao_id: str, subject: str, message: str, admin_email: str):
     """
-    Busca todos os clientes do salão e envia o e-mail promocional/marketing.
-    Retorna imediatamente 202 Accepted, pois o processo é demorado (background).
+    Executa o envio real em uma thread separada para evitar o timeout da requisição principal.
     """
-    
-    user_email_admin = current_user.get("email")
-    logging.info(f"Admin {user_email_admin} iniciou disparo de marketing em massa para {body.salao_id}.")
+    logging.info(f"THREAD DE BACKGROUND: Iniciando envio em massa para salão {salao_id}.")
 
-    # 1. Busca os dados essenciais do salão
     try:
-        salon_data = get_hairdresser_data_from_db(body.salao_id)
+        salon_data = get_hairdresser_data_from_db(salao_id)
         salon_name = salon_data.get("nome_salao", "Seu Salão")
     except Exception:
-        raise HTTPException(status_code=404, detail="Salão não encontrado ou dados incompletos.")
+        logging.error(f"Falha na thread: Salão {salao_id} não encontrado ou dados incompletos.")
+        return
 
-    # 2. Busca todos os clientes na subcoleção 'clientes'
-    clientes_ref = db.collection('cabeleireiros').document(body.salao_id).collection('clientes')
+    clientes_ref = db.collection('cabeleireiros').document(salao_id).collection('clientes')
     
-    # OBS: Usamos .stream() para buscar todos, mas para bases muito grandes, 
-    # você deve considerar paginação e um job assíncrono real.
-    try:
-        clientes_docs = clientes_ref.stream()
-    except Exception as e:
-        logging.error(f"Falha ao buscar base de clientes para marketing: {e}")
-        raise HTTPException(status_code=500, detail="Falha ao carregar a base de clientes.")
-
-    # 3. Processamento e Envio (Loop)
     clientes_enviados = 0
     clientes_falha_email = 0
+    EMAIL_DELAY_SECONDS = 0.1 # 100ms de pausa por email para evitar bloqueio
+
+    import time # Importação necessária para o time.sleep
     
-    for doc in clientes_docs:
+    # OBS: Usamos clientes_ref.stream() para buscar todos.
+    for doc in clientes_ref.stream():
         cliente_data = doc.to_dict()
         customer_email = cliente_data.get('email')
         customer_name = cliente_data.get('nome', 'Cliente')
-        cliente_doc_ref = doc.reference # Referência para o documento do cliente
+        cliente_doc_ref = doc.reference
 
         if customer_email and customer_email.strip().lower() != 'n/a':
             try:
-                # Chama a função que já criamos no email_service.py
                 email_sent = email_service.send_promotional_email_to_customer(
                     customer_email=customer_email,
                     customer_name=customer_name,
                     salon_name=salon_name,
-                    custom_subject=body.subject,
-                    custom_message_html=body.message
+                    custom_subject=subject,
+                    custom_message_html=message
                 )
 
                 if email_sent:
                     clientes_enviados += 1
-                    # Opcional: Registrar o envio no histórico de 'registros' do cliente
+                    # Registro do envio (CRM)
                     registro_ref = cliente_doc_ref.collection('registros').document()
                     registro_ref.set({
                         "tipo": "MarketingMassa",
                         "data_envio": firestore.SERVER_TIMESTAMP,
-                        "assunto": body.subject,
-                        "enviado_por": user_email_admin,
-                        "message_preview": body.message[:100] + "..."
+                        "assunto": subject,
+                        "enviado_por": admin_email,
+                        "message_preview": message[:100] + "..."
                     })
                 
             except Exception as e:
                 clientes_falha_email += 1
                 logging.error(f"Falha no envio de e-mail para {customer_email}: {e}")
         
-    logging.info(f"Disparo de marketing em massa finalizado para {body.salao_id}. Enviados: {clientes_enviados}, Falhas: {clientes_falha_email}")
+        time.sleep(EMAIL_DELAY_SECONDS) # Pausa para evitar rate limiting
+
+    logging.info(f"THREAD FINALIZADA. Disparo de marketing em massa para {salao_id}. Enviados: {clientes_enviados}, Falhas: {clientes_falha_email}")
+
+
+# --- <<< ENDPOINT DE REQUISIÇÃO (CHAMADOR) >>> ---
+@router.post("/marketing/enviar-massa", status_code=status.HTTP_202_ACCEPTED)
+async def send_mass_marketing_email(
+    body: MarketingMassaBody,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Recebe a requisição do frontend, delega a tarefa de envio para o background
+    e retorna imediatamente 202 Accepted (sucesso).
+    """
     
-    # Retorna status 202 ACCEPTED (Aceito), pois o processo pode demorar
+    user_email_admin = current_user.get("email")
+    logging.info(f"Admin {user_email_admin} REQUISITOU disparo de marketing em massa. Iniciando Background Task...")
+
+    # 1. Delega o trabalho pesado para a função de background
+    # O FastAPI garante que esta função será executada em segundo plano
+    background_tasks.add_task(
+        _process_mass_email_send, 
+        body.salao_id, 
+        body.subject, 
+        body.message, 
+        user_email_admin
+    )
+    
+    # 2. Retorna SUCESSO imediatamente
     return {
         "status": "Processamento Aceito",
-        "message": f"Disparo concluído. {clientes_enviados} e-mails enviados com sucesso. Verifique o log para falhas."
+        "message": "Disparo iniciado em segundo plano. Os e-mails serão entregues em breve."
     }
