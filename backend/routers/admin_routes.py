@@ -1583,20 +1583,37 @@ async def send_mass_marketing_email(
     """
     
     user_email_admin = current_user.get("email")
-    logging.info(f"Admin {user_email_admin} REQUISITOU disparo de marketing em massa. Iniciando Background Task...")
+    logging.info(f"Admin {user_email_admin} REQUISITOU disparo de marketing em massa.")
 
-    # 1. Delega o trabalho pesado para a função de background
-    # O FastAPI garante que esta função será executada em segundo plano
-    background_tasks.add_task(
-        _process_mass_email_send, 
-        body.salao_id, 
-        body.subject, 
-        body.message, 
-        user_email_admin
-    )
+    # 1. Busca os dados essenciais do salão para a thread
+    try:
+        # Tenta buscar os dados do salão apenas para garantir a existência e o nome
+        salon_data = get_hairdresser_data_from_db(body.salao_id)
+        if not salon_data:
+             raise HTTPException(status_code=404, detail="Salão não encontrado.")
+        salon_name = salon_data.get("nome_salao", "Seu Salão")
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        logging.error(f"Falha na busca inicial do salão: {e}")
+        raise HTTPException(status_code=500, detail="Erro ao verificar dados iniciais do salão.")
+
+
+    # 2. Delega o trabalho pesado para a função de background
+    try:
+        background_tasks.add_task(
+            _process_mass_email_send, 
+            body.salao_id, 
+            body.subject, 
+            body.message, 
+            user_email_admin
+        )
+    except Exception as e:
+        logging.error(f"Falha CRÍTICA ao iniciar Background Task: {e}")
+        raise HTTPException(status_code=500, detail="O servidor não conseguiu iniciar o processo de envio.")
     
-    # 2. Retorna SUCESSO imediatamente
+    # 3. Retorna SUCESSO (202 ACCEPTED) imediatamente
     return {
         "status": "Processamento Aceito",
-        "message": "Disparo iniciado em segundo plano. Os e-mails serão entregues em breve."
+        "message": f"Disparo iniciado em segundo plano para {salon_name}. Os e-mails serão processados em breve."
     }
