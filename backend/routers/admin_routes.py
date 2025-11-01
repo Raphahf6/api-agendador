@@ -1503,3 +1503,88 @@ async def get_dashboard_data_consolidated(
     except Exception as e:
         logging.exception(f"Erro no endpoint consolidado do dashboard: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno ao carregar dados do dashboard.")
+    
+class MarketingMassaBody(BaseModel):
+    salao_id: str
+    subject: str = Field(..., min_length=5)
+    message: str = Field(..., min_length=10)
+    # Adicione filtros aqui no futuro (ex: segmentacao: str = "todos")
+# --- <<< FIM DO NOVO MODELO >>> ---
+
+
+# --- <<< NOVO ENDPOINT: ENVIO DE E-MAIL EM MASSA >>> ---
+@router.post("/marketing/enviar-massa", status_code=status.HTTP_202_ACCEPTED)
+async def send_mass_marketing_email(
+    body: MarketingMassaBody,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Busca todos os clientes do salão e envia o e-mail promocional/marketing.
+    Retorna imediatamente 202 Accepted, pois o processo é demorado (background).
+    """
+    
+    user_email_admin = current_user.get("email")
+    logging.info(f"Admin {user_email_admin} iniciou disparo de marketing em massa para {body.salao_id}.")
+
+    # 1. Busca os dados essenciais do salão
+    try:
+        salon_data = get_hairdresser_data_from_db(body.salao_id)
+        salon_name = salon_data.get("nome_salao", "Seu Salão")
+    except Exception:
+        raise HTTPException(status_code=404, detail="Salão não encontrado ou dados incompletos.")
+
+    # 2. Busca todos os clientes na subcoleção 'clientes'
+    clientes_ref = db.collection('cabeleireiros').document(body.salao_id).collection('clientes')
+    
+    # OBS: Usamos .stream() para buscar todos, mas para bases muito grandes, 
+    # você deve considerar paginação e um job assíncrono real.
+    try:
+        clientes_docs = clientes_ref.stream()
+    except Exception as e:
+        logging.error(f"Falha ao buscar base de clientes para marketing: {e}")
+        raise HTTPException(status_code=500, detail="Falha ao carregar a base de clientes.")
+
+    # 3. Processamento e Envio (Loop)
+    clientes_enviados = 0
+    clientes_falha_email = 0
+    
+    for doc in clientes_docs:
+        cliente_data = doc.to_dict()
+        customer_email = cliente_data.get('email')
+        customer_name = cliente_data.get('nome', 'Cliente')
+        cliente_doc_ref = doc.reference # Referência para o documento do cliente
+
+        if customer_email and customer_email.strip().lower() != 'n/a':
+            try:
+                # Chama a função que já criamos no email_service.py
+                email_sent = email_service.send_promotional_email_to_customer(
+                    customer_email=customer_email,
+                    customer_name=customer_name,
+                    salon_name=salon_name,
+                    custom_subject=body.subject,
+                    custom_message_html=body.message
+                )
+
+                if email_sent:
+                    clientes_enviados += 1
+                    # Opcional: Registrar o envio no histórico de 'registros' do cliente
+                    registro_ref = cliente_doc_ref.collection('registros').document()
+                    registro_ref.set({
+                        "tipo": "MarketingMassa",
+                        "data_envio": firestore.SERVER_TIMESTAMP,
+                        "assunto": body.subject,
+                        "enviado_por": user_email_admin,
+                        "message_preview": body.message[:100] + "..."
+                    })
+                
+            except Exception as e:
+                clientes_falha_email += 1
+                logging.error(f"Falha no envio de e-mail para {customer_email}: {e}")
+        
+    logging.info(f"Disparo de marketing em massa finalizado para {body.salao_id}. Enviados: {clientes_enviados}, Falhas: {clientes_falha_email}")
+    
+    # Retorna status 202 ACCEPTED (Aceito), pois o processo pode demorar
+    return {
+        "status": "Processamento Aceito",
+        "message": f"Disparo concluído. {clientes_enviados} e-mails enviados com sucesso. Verifique o log para falhas."
+    }
