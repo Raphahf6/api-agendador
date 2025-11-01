@@ -5,34 +5,34 @@ import resend
 from datetime import datetime
 from dotenv import load_dotenv
 
-# <<< ADICIONADO: Importa o 'ZoneInfo' para lidar com fusos horários >>>
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
-    # Fallback para Python < 3.9 (requer 'pip install pytz')
     try:
         from pytz import timezone as ZoneInfo
         logging.info("Usando 'pytz' como fallback para ZoneInfo.")
     except ImportError:
         logging.error("Nem 'zoneinfo' nem 'pytz' encontrados. A conversão de fuso horário falhará.")
-        ZoneInfo = lambda x: None # Define um 'falso' ZoneInfo
+        ZoneInfo = lambda x: None
 
 load_dotenv() 
 logging.basicConfig(level=logging.INFO)
 
-# --- Constante de Fuso Horário ---
 try:
     TARGET_TZ = ZoneInfo("America/Sao_Paulo")
 except Exception:
     TARGET_TZ = None
-# --- Fim da Constante ---
+
+# --- CONSTANTE DO E-MAIL DE ENVIO ---
+# Este é o e-mail REAL verificado no Resend. NÃO MUDE ISSO.
+SENDER_EMAIL_ADDRESS = "Agendamentos-Horalis@rebdigitalsolucoes.com.br"
 
 
 # --- Função HELPER INTERNA para formatar a hora ---
 def _format_time_to_brt(start_time_iso: str) -> str:
     """Helper para converter ISO string para 'dd/MM/YYYY às HH:mm' (BRT)."""
     if not TARGET_TZ:
-        return start_time_iso
+        return start_time_iso 
     try:
         start_time_dt_aware = datetime.fromisoformat(start_time_iso)
         start_time_dt_local = start_time_dt_aware.astimezone(TARGET_TZ)
@@ -40,8 +40,6 @@ def _format_time_to_brt(start_time_iso: str) -> str:
     except (ValueError, TypeError) as e:
         logging.warning(f"Não foi possível converter fuso para {start_time_iso}: {e}")
         return start_time_iso
-# --- Fim da Função HELPER ---
-
 
 # --- Função HELPER INTERNA para o CSS Base ---
 def _get_base_css() -> str:
@@ -65,13 +63,13 @@ def send_confirmation_email_to_salon(
     service_name: str, 
     start_time_iso: str
 ) -> bool:
-    """
-    Envia um e-mail de confirmação para o SALÃO sobre o novo agendamento.
-    """
     
     formatted_time = _format_time_to_brt(start_time_iso)
-
     subject = f"✅ NOVO AGENDAMENTO para {salon_name}: {service_name} às {formatted_time}"
+    
+    # <<< CORREÇÃO AQUI >>>
+    # O remetente para o *próprio salão* pode ser genérico
+    from_address = f"Horalis Agendamentos <{SENDER_EMAIL_ADDRESS}>"
     
     html_content = f"""
     <!DOCTYPE html>
@@ -112,7 +110,7 @@ def send_confirmation_email_to_salon(
     
     try:
         result = resend.Emails.send({
-            "from": "Horalis Agendamentos <Agendamentos-Horalis@rebdigitalsolucoes.com.br>", 
+            "from": from_address, 
             "to": [salon_email],
             "subject": subject,
             "html": html_content,
@@ -133,11 +131,12 @@ def send_confirmation_email_to_customer(
     start_time_iso: str,
     salon_name: str
 ) -> bool:
-    """
-    Envia um e-mail de confirmação para o CLIENTE sobre o novo agendamento.
-    """
+    
     formatted_time = _format_time_to_brt(start_time_iso)
     subject = f"Agendamento Confirmado! ✅ {service_name} em {salon_name}"
+
+    # <<< CORREÇÃO AQUI: Define o "From" dinâmico >>>
+    from_address = f"{salon_name} <{SENDER_EMAIL_ADDRESS}>"
 
     html_content = f"""
     <!DOCTYPE html>
@@ -171,12 +170,12 @@ def send_confirmation_email_to_customer(
     
     try:
         result = resend.Emails.send({
-            "from": "Horalis Agendamentos <Agendamentos-Horalis@rebdigitalsolucoes.com.br>",
+            "from": from_address, # <-- USA O NOME DO SALÃO
             "to": [customer_email],
             "subject": subject,
             "html": html_content,
         })
-        logging.info(f"E-mail de confirmação (para CLIENTE) enviado com sucesso para {customer_email}. ID: {result.get('id')}")
+        logging.info(f"E-mail de confirmação (para CLIENTE) enviado com sucesso para {customer_email}.")
         return True
     except Exception as e:
         logging.error(f"ERRO RESEND: Falha ao enviar e-mail (para CLIENTE) {customer_email}: {e}")
@@ -190,11 +189,12 @@ def send_cancellation_email_to_customer(
     start_time_iso: str, 
     salon_name: str
 ) -> bool:
-    """
-    Envia um e-mail de CANCELAMENTO para o CLIENTE.
-    """
+    
     formatted_time = _format_time_to_brt(start_time_iso)
     subject = f"Agendamento Cancelado ❌ {service_name} em {salon_name}"
+    
+    # <<< CORREÇÃO AQUI: Define o "From" dinâmico >>>
+    from_address = f"{salon_name} <{SENDER_EMAIL_ADDRESS}>"
 
     html_content = f"""
     <!DOCTYPE html>
@@ -204,7 +204,7 @@ def send_cancellation_email_to_customer(
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
             {_get_base_css()}
-            h1 {{ color: #D32F2F; }} /* Vermelho para cancelamento */
+            h1 {{ color: #D32F2F; }}
             .detail {{ border-left: 5px solid #FFCDD2; background-color: #FFF8F8; }}
         </style>
     </head>
@@ -230,12 +230,12 @@ def send_cancellation_email_to_customer(
     
     try:
         result = resend.Emails.send({
-            "from": "Horalis Agendamentos <Agendamentos-Horalis@rebdigitalsolucoes.com.br>",
+            "from": from_address, # <-- USA O NOME DO SALÃO
             "to": [customer_email],
             "subject": subject,
             "html": html_content,
         })
-        logging.info(f"E-mail de CANCELAMENTO (para CLIENTE) enviado com sucesso para {customer_email}. ID: {result.get('id')}")
+        logging.info(f"E-mail de CANCELAMENTO (para CLIENTE) enviado com sucesso para {customer_email}.")
         return True
     except Exception as e:
         logging.error(f"ERRO RESEND: Falha ao enviar e-mail de CANCELAMENTO (para CLIENTE) {customer_email}: {e}")
@@ -250,12 +250,13 @@ def send_reschedule_email_to_customer(
     old_start_time_iso: str,
     new_start_time_iso: str
 ) -> bool:
-    """
-    Envia um e-mail de REAGENDAMENTO para o CLIENTE.
-    """
+    
     old_formatted_time = _format_time_to_brt(old_start_time_iso)
     new_formatted_time = _format_time_to_brt(new_start_time_iso)
     subject = f"Agendamento Reagendado 🗓️ {service_name} em {salon_name}"
+
+    # <<< CORREÇÃO AQUI: Define o "From" dinâmico >>>
+    from_address = f"{salon_name} <{SENDER_EMAIL_ADDRESS}>"
 
     html_content = f"""
     <!DOCTYPE html>
@@ -265,7 +266,7 @@ def send_reschedule_email_to_customer(
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
             {_get_base_css()}
-            h1 {{ color: #303F9F; }} /* Azul escuro para reagendamento */
+            h1 {{ color: #303F9F; }}
             .detail-old {{ border-left: 5px solid #FFCDD2; background-color: #FFF8F8; padding: 10px; border-radius: 4px; text-decoration: line-through; color: #777; }}
             .detail-new {{ border-left: 5px solid #C8E6C9; background-color: #F8FFF8; padding: 10px; border-radius: 4px; margin-top: 10px; }}
         </style>
@@ -298,12 +299,12 @@ def send_reschedule_email_to_customer(
     
     try:
         result = resend.Emails.send({
-            "from": "Horalis Agendamentos <Agendamentos-Horalis@rebdigitalsolucoes.com.br>",
+            "from": from_address, # <-- USA O NOME DO SALÃO
             "to": [customer_email],
             "subject": subject,
             "html": html_content,
         })
-        logging.info(f"E-mail de REAGENDAMENTO (para CLIENTE) enviado com sucesso para {customer_email}. ID: {result.get('id')}")
+        logging.info(f"E-mail de REAGENDAMENTO (para CLIENTE) enviado com sucesso para {customer_email}.")
         return True
     except Exception as e:
         logging.error(f"ERRO RESEND: Falha ao enviar e-mail de REAGENDAMENTO (para CLIENTE) {customer_email}: {e}")
@@ -317,11 +318,12 @@ def send_reminder_email_to_customer(
     start_time_iso: str,
     salon_name: str
 ) -> bool:
-    """
-    Envia um e-mail de LEMBRETE para o CLIENTE (ex: 1 hora antes).
-    """
+    
     formatted_time = _format_time_to_brt(start_time_iso)
     subject = f"Lembrete de Agendamento ⏰ {service_name} hoje em {salon_name}"
+
+    # <<< CORREÇÃO AQUI: Define o "From" dinâmico >>>
+    from_address = f"{salon_name} <{SENDER_EMAIL_ADDRESS}>"
 
     html_content = f"""
     <!DOCTYPE html>
@@ -331,7 +333,7 @@ def send_reminder_email_to_customer(
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
             {_get_base_css()}
-            h1 {{ color: #FFA000; }} /* Laranja para lembrete */
+            h1 {{ color: #FFA000; }}
             .detail {{ border-left: 5px solid #FFECB3; background-color: #FFFDE7; }}
         </style>
     </head>
@@ -357,18 +359,18 @@ def send_reminder_email_to_customer(
     
     try:
         result = resend.Emails.send({
-            "from": "Horalis Agendamentos <Agendamentos-Horalis@rebdigitalsolucoes.com.br>",
+            "from": from_address, # <-- USA O NOME DO SALÃO
             "to": [customer_email],
             "subject": subject,
             "html": html_content,
         })
-        logging.info(f"E-mail de LEMBRETE (para CLIENTE) enviado com sucesso para {customer_email}. ID: {result.get('id')}")
+        logging.info(f"E-mail de LEMBRETE (para CLIENTE) enviado com sucesso para {customer_email}.")
         return True
     except Exception as e:
         logging.error(f"ERRO RESEND: Falha ao enviar e-mail de LEMBRETE (para CLIENTE) {customer_email}: {e}")
         return False
         
-# --- <<< ADICIONADO: FUNÇÃO 6: E-mail Promocional/Personalizado >>> ---
+# --- FUNÇÃO 6: E-mail Promocional/Personalizado ---
 def send_promotional_email_to_customer(
     customer_email: str,
     customer_name: str,
@@ -376,12 +378,13 @@ def send_promotional_email_to_customer(
     custom_subject: str,
     custom_message_html: str
 ) -> bool:
-    """
-    Envia um e-mail PROMOCIONAL/PERSONALIZADO diretamente da tela de CRM.
-    """
     
-    # Define o assunto do e-mail
     subject = f"{custom_subject} - Exclusivo {salon_name}"
+
+    # <<< CORREÇÃO AQUI: Define o "From" dinâmico >>>
+    # O remetente do e-mail promocional (marketing) deve ser do próprio salão
+    from_address = f"{salon_name} <{SENDER_EMAIL_ADDRESS}>"
+    # Nota: O seu 'from' original era "Horalis <Horalis@...>", mudei para ser dinâmico.
 
     html_content = f"""
     <!DOCTYPE html>
@@ -391,7 +394,7 @@ def send_promotional_email_to_customer(
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
             {_get_base_css()}
-            h1 {{ color: #E91E63; }} /* Rosa/Magenta para promoções */
+            h1 {{ color: #E91E63; }}
             .detail {{ background-color: #FCE4EC; border-left: 5px solid #FF80AB; }}
         </style>
     </head>
@@ -401,7 +404,7 @@ def send_promotional_email_to_customer(
             <p>Olá, <strong>{customer_name}</strong>!</p>
             <p>A equipe do <strong>{salon_name}</strong> tem uma novidade especial para você:</p>
             
-            <div class="detail" style="margin-top: 20px; margin-bottom: 20px;">
+            <div class="detail" style="margin-top: 20px; margin-bottom: 20px; padding: 15px; border-radius: 4px;">
                 {custom_message_html}
             </div>
             
@@ -416,14 +419,13 @@ def send_promotional_email_to_customer(
     
     try:
         result = resend.Emails.send({
-            "from": "Horalis <Horalis@rebdigitalsolucoes.com.br>", # Remetente mais genérico para promo
+            "from": from_address, # <-- USA O NOME DO SALÃO
             "to": [customer_email],
             "subject": subject,
             "html": html_content,
         })
-        logging.info(f"E-mail PROMOCIONAL enviado com sucesso para {customer_email}. ID: {result.get('id')}")
+        logging.info(f"E-mail PROMOCIONAL (de {salon_name}) enviado com sucesso para {customer_email}.")
         return True
     except Exception as e:
         logging.error(f"ERRO RESEND: Falha ao enviar e-mail PROMOCIONAL para {customer_email}: {e}")
         return False
-# --- <<< FIM DA ADIÇÃO >>> ---
