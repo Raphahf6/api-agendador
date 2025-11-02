@@ -178,11 +178,10 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
         service_price = service_info.get('preco')
         salon_email_destino = salon_data.get('calendar_id') 
         
-        # <<< CORREÇÃO DE SEGURANÇA: Busca o valor do sinal do DB, IGNORA o frontend >>>
+        # Busca o valor do sinal do DB (Segurança)
         sinal_valor_backend = salon_data.get('sinal_valor', 0.0)
         if payload.transaction_amount != sinal_valor_backend:
-            logging.warning(f"Possível fraude! Valor do frontend ({payload.transaction_amount}) é diferente do backend ({sinal_valor_backend}).")
-            # Sempre usamos o valor do backend
+            logging.warning(f"Possível fraude! Valor do frontend ({payload.transaction_amount}) é diferente do backend ({sinal_valor_backend}). Usando valor do backend.")
             payload.transaction_amount = sinal_valor_backend
 
         if duration is None or service_name is None:
@@ -190,7 +189,7 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
             
         start_time_dt = datetime.fromisoformat(payload.start_time)
         
-        # --- 2. VERIFICAÇÃO DE HORÁRIO DISPONÍVEL (CRÍTICO) ---
+        # --- 2. VERIFICAÇÃO DE HORÁRIO DISPONÍVEL ---
         is_free = calendar_service.is_slot_available(
             salao_id=salao_id, 
             salon_data=salon_data,
@@ -250,8 +249,11 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
                 "payment_method_id": "pix",
                 "payer": { "email": payload.payer.email, "identification": payer_identification_data },
                 "external_reference": external_reference, 
-                "notification_url": notification_url, 
-                "device_id": payload.device_id #
+                "notification_url": notification_url,
+                # <<< CORREÇÃO: device_id vai dentro de additional_info >>>
+                "additional_info": {
+                    "device_id": payload.device_id 
+                }
             }
             payment_response = mp_payment_client.create(payment_data)
             
@@ -285,8 +287,11 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
                 "issuer_id": payload.issuer_id,
                 "payer": { "email": payload.payer.email, "identification": payer_identification_data },
                 "external_reference": external_reference, 
-                "notification_url": notification_url, 
-                "device_id": payload.device_id #
+                "notification_url": notification_url,
+                # <<< CORREÇÃO: device_id vai dentro de additional_info >>>
+                "additional_info": {
+                    "device_id": payload.device_id
+                }
             }
             payment_response = mp_payment_client.create(payment_data)
 
