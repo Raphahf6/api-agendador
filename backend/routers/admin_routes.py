@@ -171,6 +171,7 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
                 "payer": { "email": payload.payer.email, "identification": payer_identification_data },
                 "external_reference": salao_id, 
                 "notification_url": notification_url, 
+                "device_id": payload.device_id
             }
             payment_response = mp_payment_client.create(payment_data)
             
@@ -208,7 +209,8 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
                 "issuer_id": payload.issuer_id,
                 "payer": { "email": payload.payer.email, "identification": payer_identification_data },
                 "external_reference": salao_id, 
-                "notification_url": notification_url, 
+                "notification_url": notification_url,
+                "device_id": payload.device_id
             }
             payment_response = mp_payment_client.create(payment_data)
 

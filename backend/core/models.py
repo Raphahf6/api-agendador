@@ -140,6 +140,7 @@ class UserPaidSignupPayload(BaseModel):
     transaction_amount: float
     installments: Optional[int] = None
     payer: PayerData
+    device_id: Optional[str] = None
 
 class NotaManualBody(BaseModel):
     salao_id: str
@@ -193,3 +194,4 @@ class AppointmentPaymentPayload(BaseModel):
     transaction_amount: float # Valor do SINAL
     installments: Optional[int] = None
     payer: PayerData
+    device_id: Optional[str] = None 

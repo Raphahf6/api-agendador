@@ -251,6 +251,7 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
                 "payer": { "email": payload.payer.email, "identification": payer_identification_data },
                 "external_reference": external_reference, 
                 "notification_url": notification_url, 
+                "device_id": payload.device_id #
             }
             payment_response = mp_payment_client.create(payment_data)
             
@@ -285,6 +286,7 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
                 "payer": { "email": payload.payer.email, "identification": payer_identification_data },
                 "external_reference": external_reference, 
                 "notification_url": notification_url, 
+                "device_id": payload.device_id #
             }
             payment_response = mp_payment_client.create(payment_data)
 
