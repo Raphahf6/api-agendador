@@ -186,6 +186,7 @@ class AppointmentPaymentPayload(BaseModel):
     customer_name: str = Field(..., min_length=2)
     customer_email: str = Field(..., pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
     customer_phone: str = Field(..., pattern=r"^(?:\+55)?\d{10,11}$")
+    device_session_id: Optional[str] = None
     
     # Dados do Pagamento (do Brick)
     token: Optional[str] = None
