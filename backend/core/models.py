@@ -38,6 +38,9 @@ class ClientDetail(BaseModel): # Admin
     cor_gradiente_fim: Optional[str] = None
     subscriptionStatus: Optional[str] = None
     trialEndsAt: Optional[datetime] = None
+    marketing_cota_total: Optional[int] = 100 # Importe a constante ou defina 100
+    marketing_cota_usada: Optional[int] = 0
+    marketing_cota_reset_em: Optional[datetime] = None
 
 class NewClientData(BaseModel): # Admin
     nome_salao: str
