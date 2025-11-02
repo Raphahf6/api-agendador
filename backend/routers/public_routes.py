@@ -161,7 +161,6 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
         if not salon_data: 
             raise HTTPException(status_code=404, detail="Salão não encontrado")
             
-        # <<< CHAVE DE SEGURANÇA: Token do Salão >>>
         salon_access_token = salon_data.get('mp_access_token')
         
         if not salon_access_token:
@@ -170,7 +169,7 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
 
         # Cria a instância do MercadoPago com o TOKEN DO SALÃO
         mp_client_do_salao = mercadopago.SDK(salon_access_token)
-        # -----------------------------------------------
+        mp_client_do_salao_payment = mp_client_do_salao.payment()
 
         service_info = salon_data.get("servicos_data", {}).get(service_id)
         if not service_info:
@@ -180,7 +179,7 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
         service_name = service_info.get('nome_servico')
         salon_name = salon_data.get('nome_salao')
         salon_email_destino = salon_data.get('calendar_id') 
-        service_price = service_info.get('preco')
+        service_price = service_info.get('preco') # Correção do erro anterior
         
         # BUSCA VALOR DO SINAL DO DB (SEGURANÇA)
         sinal_valor_backend = salon_data.get('sinal_valor', 0.0)
@@ -260,7 +259,7 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
                 "statement_descriptor": statement_descriptor
             }
             # <<< CHAVE: Usa a instância do salão >>>
-            payment_response = mp_client_do_salao.create(payment_data, request_options=ro_obj)
+            payment_response = mp_client_do_salao_payment.create(payment_data, request_options=ro_obj)
             
             if payment_response["status"] not in [200, 201]:
                 raise Exception(f"Erro MP (PIX): {payment_response.get('response').get('message', 'Erro desconhecido')}")
@@ -290,7 +289,7 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
                 "statement_descriptor": statement_descriptor
             }
             # <<< CHAVE: Usa a instância do salão >>>
-            payment_response = mp_client_do_salao.create(payment_data, request_options=ro_obj)
+            payment_response = mp_client_do_salao_payment.create(payment_data, request_options=ro_obj)
 
             if payment_response["status"] not in [200, 201]:
                 error_msg = payment_response.get('response', {}).get('message', 'Erro desconhecido ao processar o cartão.')
