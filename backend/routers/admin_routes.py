@@ -1371,18 +1371,18 @@ async def get_dashboard_data_consolidated(
         now_utc = datetime.now(pytz.utc) 
         hoje_utc = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
         
-        # 1. Novos Clientes
+        # 1. Novos Clientes (Lógica mantida)
         if novos_clientes_periodo == 'hoje':
              clientes_start = hoje_utc
-             clientes_end = now_utc
+             clientes_end = hoje_utc + timedelta(days=1)
         elif novos_clientes_periodo == '7dias':
              clientes_start = hoje_utc - timedelta(days=6)
-             clientes_end = now_utc
+             clientes_end = hoje_utc + timedelta(days=1)
         else: # 30 dias
              clientes_start = hoje_utc - timedelta(days=29)
-             clientes_end = now_utc
+             clientes_end = hoje_utc + timedelta(days=1)
         
-        # 2. Agendamentos em Foco
+        # 2. Agendamentos em Foco (Lógica mantida)
         if agendamentos_foco_periodo == 'hoje':
             foco_start = hoje_utc
             foco_end = hoje_utc + timedelta(days=1)
@@ -1393,24 +1393,34 @@ async def get_dashboard_data_consolidated(
             foco_start = now_utc - timedelta(hours=24)
             foco_end = now_utc
             
-        # 3. Receita
+        # 3. Receita ESTIMADA
         if receita_periodo == 'mes':
-             receita_start = now_utc.replace(day=1).replace(hour=0, minute=0, second=0, microsecond=0)
-             receita_end = (now_utc.replace(day=1) + timedelta(days=32)).replace(day=1) - timedelta(microseconds=1)
-        else: 
+            receita_start = now_utc.replace(day=1).replace(hour=0, minute=0, second=0, microsecond=0)
+            # Define o final do mês atual (fim do dia do último dia)
+            receita_end = (receita_start + timedelta(days=32)).replace(day=1) 
+        elif receita_periodo == 'semana':
              receita_start = hoje_utc
-             receita_end = now_utc + timedelta(days=7)
+             # Próximos 7 dias (incluindo hoje), terminando ao final do 7º dia
+             receita_end = hoje_utc + timedelta(days=7) 
+        else: # 'hoje'
+             receita_start = hoje_utc
+             # O final é o final do dia de hoje (meia-noite do dia seguinte)
+             receita_end = hoje_utc + timedelta(days=1) 
 
-        # 4. Gráfico
+        # 4. Gráfico (Lógica mantida)
         chart_start = hoje_utc - timedelta(days=agendamentos_grafico_dias - 1)
-        chart_end = now_utc
+        chart_end = hoje_utc + timedelta(days=1) # Apenas para consultas de "até hoje"
         
         
         # --- Queries Firestone (CORRIGIDAS) ---
-        novos_clientes_query = clientes_ref.where(filter=FieldFilter('data_cadastro', '>=', clientes_start)).where(filter=FieldFilter('data_cadastro', '<=', clientes_end))
+        novos_clientes_query = clientes_ref.where(filter=FieldFilter('data_cadastro', '>=', clientes_start)).where(filter=FieldFilter('data_cadastro', '<', clientes_end))
+        
         foco_query = agendamentos_ref.where(filter=FieldFilter('startTime', '>=', foco_start)).where(filter=FieldFilter('startTime', '<', foco_end)).where(filter=FieldFilter('status', '!=', 'cancelado'))
-        receita_query = agendamentos_ref.where(filter=FieldFilter('startTime', '>=', receita_start)).where(filter=FieldFilter('status', '!=', 'cancelado'))
-        chart_query = agendamentos_ref.where(filter=FieldFilter('startTime', '>=', chart_start)).where(filter=FieldFilter('startTime', '<=', chart_end)).where(filter=FieldFilter('status', '!=', 'cancelado'))
+        
+        # CORREÇÃO CRÍTICA: AGORA USA receita_end para limitar a consulta de receita
+        receita_query = agendamentos_ref.where(filter=FieldFilter('startTime', '>=', receita_start)).where(filter=FieldFilter('startTime', '<', receita_end)).where(filter=FieldFilter('status', '!=', 'cancelado'))
+        
+        chart_query = agendamentos_ref.where(filter=FieldFilter('startTime', '>=', chart_start)).where(filter=FieldFilter('startTime', '<', chart_end)).where(filter=FieldFilter('status', '!=', 'cancelado'))
 
         
         # --- Execução das Consultas (Síncronas) ---
@@ -1424,6 +1434,7 @@ async def get_dashboard_data_consolidated(
         count_novos_clientes = len(novos_clientes_snapshot)
         count_agendamentos_foco = len(foco_snapshot)
         
+        # O cálculo da receita agora será preciso, pois o snapshot já está filtrado
         total_receita = sum(doc.to_dict().get('servicePrice', 0) for doc in receita_snapshot)
         receita_formatada = f"{total_receita:.2f}".replace('.', ',')
         
