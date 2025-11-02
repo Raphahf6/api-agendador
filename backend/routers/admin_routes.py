@@ -182,7 +182,7 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
                 }
             ]
         }
-
+        statement_descriptor = "HORALISPRO"
         if payload.payment_method_id == 'pix':
             payment_data = {
                 "transaction_amount": payload.transaction_amount,
@@ -191,7 +191,8 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
                 "payer": { "email": payload.payer.email, "identification": payer_identification_data },
                 "external_reference": salao_id, 
                 "notification_url": notification_url, 
-                "additional_info": additional_info
+                "additional_info": additional_info,
+                "statement_descriptor": statement_descriptor
             }
             payment_response = mp_payment_client.create(payment_data, request_options=ro_obj)
             
@@ -226,7 +227,8 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
                 "payer": { "email": payload.payer.email, "identification": payer_identification_data },
                 "external_reference": salao_id, 
                 "notification_url": notification_url,
-                "additional_info": additional_info
+                "additional_info": additional_info,
+                "statement_descriptor": statement_descriptor
             }
             payment_response = mp_payment_client.create(payment_data, request_options=ro_obj)
 

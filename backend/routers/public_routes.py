@@ -247,7 +247,8 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
                 }
             ]
         }
-
+        statement_descriptor = salon_name[:10].upper().replace(" ", "")
+        
         # --- CASO 1: PAGAMENTO COM PIX ---
         if payload.payment_method_id == 'pix':
             payment_data = {
@@ -255,7 +256,8 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
                 "payment_method_id": "pix",
                 "payer": { "email": payload.payer.email, "identification": payer_identification_data },
                 "external_reference": external_reference, "notification_url": notification_url, 
-                "additional_info": additional_info
+                "additional_info": additional_info,
+                "statement_descriptor": statement_descriptor
             }
             # <<< CHAVE: Usa a instância do salão >>>
             payment_response = mp_client_do_salao.create(payment_data, request_options=ro_obj)
@@ -284,7 +286,8 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
                 "issuer_id": payload.issuer_id,
                 "payer": { "email": payload.payer.email, "identification": payer_identification_data },
                 "external_reference": external_reference, "notification_url": notification_url,
-                "additional_info": additional_info
+                "additional_info": additional_info,
+                "statement_descriptor": statement_descriptor
             }
             # <<< CHAVE: Usa a instância do salão >>>
             payment_response = mp_client_do_salao.create(payment_data, request_options=ro_obj)
