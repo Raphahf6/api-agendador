@@ -227,8 +227,18 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
             "type": payload.payer.identification.type, "number": payload.payer.identification.number
         } if payload.payer.identification else None
 
-        ro_obj = RequestOptions(custom_headers={ "X-Meli-Session-Id": payload.device_id })
-        
+        # CORREÇÃO CRÍTICA: Captura o device ID e configura o header para Antifraude
+        device_id_value = getattr(payload, 'device_session_id', None)
+        custom_headers = {}
+        if device_id_value:
+            custom_headers["X-Meli-Session-Id"] = device_id_value
+            logging.info(f"Enviando X-Meli-Session-Id: {device_id_value}")
+        else:
+            logging.warning("Device ID ausente no payload. Risco de fraude aumentado.")
+
+        ro_obj = RequestOptions(custom_headers=custom_headers) # Usa o custom_headers
+        # FIM DA CORREÇÃO
+
         nome_completo = payload.customer_name.strip().split()
         primeiro_nome = nome_completo[0]; ultimo_nome = nome_completo[-1] if len(nome_completo) > 1 else primeiro_nome
 
@@ -259,7 +269,7 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
                 "statement_descriptor": statement_descriptor
             }
             # Utiliza a instância .payment()
-            payment_response = mp_client_do_salao_payment.create(payment_data, request_options=ro_obj)
+            payment_response = mp_client_do_salao_payment.create(payment_data, request_options=ro_obj) # ro_obj é usado aqui
             
             if payment_response["status"] not in [200, 201]:
                 # Se a chamada ao MP falhar, deleta e levanta a exceção.
@@ -269,8 +279,7 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
             payment_result = payment_response["response"]
             payment_status = payment_result.get("status")
 
-            # <<< CORREÇÃO PIX: O PIX NUNCA VEM APROVADO, MAS PODE VIR 'PENDING'. NÃO DELETA O AGENDAMENTO, MAS DEVOLVE SUCESSO. >>>
-            # A lógica é manter o agendamento em pending_payment para aguardar o webhook.
+            # PIX: O PIX NUNCA VEM APROVADO, MAS PODE VIR 'PENDING'.
             if payment_status in ["pending", "in_process"]:
                 qr_code_data = payment_result.get("point_of_interaction", {}).get("transaction_data", {})
                 agendamento_ref.update({"mercadopagoPaymentId": payment_result.get("id")})
@@ -302,7 +311,7 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
                 "statement_descriptor": statement_descriptor
             }
             # Utiliza a instância .payment()
-            payment_response = mp_client_do_salao_payment.create(payment_data, request_options=ro_obj)
+            payment_response = mp_client_do_salao_payment.create(payment_data, request_options=ro_obj) # ro_obj é usado aqui
 
             if payment_response["status"] not in [200, 201]:
                 if agendamento_ref: agendamento_ref.delete()
@@ -330,7 +339,7 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
                 
                 if agendamento_ref: agendamento_ref.delete()
 
-                error_detail = "Seu pagamento está em análise ou pendente. Por favor, tente novamente com outro método ou mais tarde."
+                error_detail = payment_response["response"].get("status_detail", "Seu pagamento está em análise ou pendente. Por favor, tente novamente com outro método ou mais tarde.")
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error_detail)
             
             else:
