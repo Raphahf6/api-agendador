@@ -65,7 +65,7 @@ GOOGLE_REDIRECT_URI = f"{RENDER_API_URL}/api/v1/admin/google/auth/callback"
 # --- Constantes do Mercado Pago OAuth ---
 MP_APP_ID = os.environ.get("MP_APP_ID")
 MP_SECRET_KEY = os.environ.get("MP_SECRET_KEY")
-MP_REDIRECT_URI = f"{RENDER_API_URL}/api/v1/admin/mercadopago/callback"
+MP_REDIRECT_URI = f"{RENDER_API_URL}/admin/mercadopago/callback"
 MP_AUTH_URL = "https://auth.mercadopago.com.br/authorization"
 MP_TOKEN_URL = "https://api.mercadopago.com/oauth/token"
 
