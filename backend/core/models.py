@@ -22,6 +22,7 @@ class SalonPublicDetails(BaseModel):
     cor_gradiente_fim: str = "#F472B6"
     servicos: List[Service] = []
     mp_public_key: Optional[str] = None
+    sinal_valor: Optional[float] = 0.0
 
 class ClientDetail(BaseModel): # Admin
     id: str
