@@ -43,6 +43,7 @@ class ClientDetail(BaseModel): # Admin
     marketing_cota_usada: Optional[int] = 0
     marketing_cota_reset_em: Optional[datetime] = None
     mp_public_key: Optional[str] = None
+    sinal_valor: Optional[float] = 0.0
 
 class NewClientData(BaseModel): # Admin
     nome_salao: str
