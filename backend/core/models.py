@@ -195,3 +195,9 @@ class AppointmentPaymentPayload(BaseModel):
     installments: Optional[int] = None
     payer: PayerData
     device_id: Optional[str] = None 
+    
+class PagamentoSettingsBody(BaseModel):
+    # Nota: Não precisamos mais do mp_public_key aqui, pois o OAuth já o salva.
+    # Mas vamos mantê-lo para a UX do admin, se ele quiser digitá-lo manualmente como fallback.
+    mp_public_key: Optional[str] = None
+    sinal_valor: Optional[float] = 0.0

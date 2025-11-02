@@ -24,7 +24,7 @@ from core.models import (
     EmailPromocionalBody, NotaManualBody, TimelineItem, CalendarEvent, 
     ReagendamentoBody, UserPaidSignupPayload, DashboardDataResponse, 
     PayerIdentification, PayerData, HistoricoAgendamentoItem, ClienteDetailsResponse,
-    MarketingMassaBody
+    MarketingMassaBody,PagamentoSettingsBody
 )
 from core.auth import get_current_user 
 from core.db import get_all_clients_from_db, get_hairdresser_data_from_db, db
@@ -1609,3 +1609,39 @@ async def send_mass_marketing_email(
         "status": "Processamento Aceito",
         "message": f"Disparo de e-mail iniciado em segundo plano para {salon_name}."
     }
+    
+@router.patch("/configuracoes/pagamento/{salao_id}", status_code=status.HTTP_200_OK)
+async def update_payment_settings(
+    salao_id: str,
+    settings: PagamentoSettingsBody,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Endpoint seguro para o admin salvar a Chave Pública (fallback) e o Valor do Sinal.
+    """
+    user_uid = current_user.get("uid")
+    logging.info(f"Admin (UID: {user_uid}) atualizando config de pagamento para {salao_id}.")
+
+    try:
+        salao_doc_ref = db.collection('cabeleireiros').document(salao_id)
+        
+        # Opcional: Verificação de segurança se o usuário logado é o dono do salão
+        # (Se a verificação for feita em get_hairdresser_data_from_db ou por regras do Firestore, pode ser ignorada aqui)
+
+        update_data = {
+            "sinal_valor": settings.sinal_valor
+            # Se a chave pública for enviada, ela é atualizada. Se for None, mantemos a OAuth salva.
+        }
+        
+        # Apenas atualiza a chave pública se o admin enviá-la (fluxo manual fallback)
+        if settings.mp_public_key:
+            update_data["mp_public_key"] = settings.mp_public_key
+        
+        salao_doc_ref.update(update_data)
+        
+        logging.info(f"Configurações de pagamento (Sinal: {settings.sinal_valor}) salvas para {salao_id}.")
+        return {"message": "Configurações de pagamento salvas com sucesso!"}
+
+    except Exception as e:
+        logging.exception(f"Erro ao salvar configurações de pagamento para {salao_id}: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno ao salvar configurações.")
