@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field,EmailStr
 from google_auth_oauthlib.flow import Flow
 import mercadopago 
 from firebase_admin import auth as admin_auth
+from mercadopago.config import RequestOptions
 
 # Importações dos modelos (Assumindo que estão em core/models.py)
 from core.models import (
@@ -123,7 +124,7 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Erro ao criar usuário: {e}")
 
-    # --- Passo 3: Criar Salão no Firestore (MODIFICADO COM COTAS) ---
+    # --- Passo 3: Criar Salão no Firestore (com cotas) ---
     salao_doc_ref = db.collection("cabeleireiros").document(salao_id)
     try:
         logging.info(f"Criando documento do salão (pending) com ID: {salao_id} para UID: {uid}...")
@@ -151,7 +152,7 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
         if uid: admin_auth.delete_user(uid)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Erro ao salvar dados do salão: {e}")
 
-    # --- Passo 4: Processar o Pagamento (Lógica Dividida) ---
+    # --- Passo 4: Processar o Pagamento (COM HEADER CORRIGIDO) ---
     try:
         logging.info(f"Processando pagamento para {salao_id} via {payload.payment_method_id}...")
         notification_url = f"{RENDER_API_URL}/webhooks/mercado-pago"
@@ -160,17 +161,13 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
             "type": payload.payer.identification.type,
             "number": payload.payer.identification.number
         } if payload.payer.identification else None
-        
-        additional_info = {
-            "device_id": payload.device_id
-        }
 
-        # --- <<< CORREÇÃO CRÍTICA: Define o Header (Device ID) >>> ---
-        request_options = {
-            "custom_headers": {
+        # --- <<< CORREÇÃO CRÍTICA: Define o Objeto RequestOptions >>> ---
+        ro_obj = RequestOptions(
+            custom_headers={
                 "X-Meli-Session-Id": payload.device_id
             }
-        }
+        )
         # --- <<< FIM DA CORREÇÃO >>> ---
 
         # --- CASO 1: PAGAMENTO COM PIX ---
@@ -182,13 +179,12 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
                 "payer": { "email": payload.payer.email, "identification": payer_identification_data },
                 "external_reference": salao_id, 
                 "notification_url": notification_url, 
-                "additional_info": additional_info
+                # additional_info removido
             }
-            # Passa os headers customizados para a chamada da SDK
-            payment_response = mp_payment_client.create(payment_data, request_options)
+            payment_response = mp_payment_client.create(payment_data, request_options=ro_obj)
             
             if payment_response["status"] not in [200, 201]:
-                raise Exception(f"Erro MercadoPago (PIX): {payment_response.get('response').get('message', 'Erro desconhecido ao processar PIX')}")
+                raise Exception(f"Erro MercadoPago (PIX): {payment_response.get('response').get('message', 'Erro desconhecido')}")
 
             payment_result = payment_response["response"]
             qr_code_data = payment_result.get("point_of_interaction", {}).get("transaction_data", {})
@@ -210,7 +206,7 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
                 }
             }
         
-        # --- CASO 2: PAGAMENTO COM CARTÃO (MODIFICADO COM COTAS) ---
+        # --- CASO 2: PAGAMENTO COM CARTÃO ---
         else: 
             payment_data = {
                 "transaction_amount": payload.transaction_amount,
@@ -222,28 +218,23 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
                 "payer": { "email": payload.payer.email, "identification": payer_identification_data },
                 "external_reference": salao_id, 
                 "notification_url": notification_url,
-                "additional_info": additional_info
-                
+                # additional_info removido
             }
-            # Passa os headers customizados para a chamada da SDK
-            payment_response = mp_payment_client.create(payment_data, request_options)
+            payment_response = mp_payment_client.create(payment_data, request_options=ro_obj)
 
             if payment_response["status"] not in [200, 201]:
-                error_msg = payment_response.get('response', {}).get('message', 'Erro desconhecido ao processar o cartão.')
+                error_msg = payment_response.get('response', {}).get('message', 'Erro desconhecido')
                 raise Exception(f"Erro MercadoPago (Cartão): {error_msg}")
 
             payment_status = payment_response["response"].get("status")
             
             if payment_status == "approved":
-                logging.info(f"Pagamento APROVADO instantaneamente para {salao_id}.")
                 new_paid_until = datetime.now(pytz.utc) + timedelta(days=30)
-                
                 salao_doc_ref.update({
                     "subscriptionStatus": "active",
                     "paidUntil": new_paid_until,
                     "subscriptionLastUpdated": firestore.SERVER_TIMESTAMP,
                     "mercadopagoLastPaymentId": payment_response["response"].get("id"),
-                    
                     "marketing_cota_total": MARKETING_COTA_INICIAL,
                     "marketing_cota_usada": 0,
                     "marketing_cota_reset_em": new_paid_until 
@@ -254,7 +245,7 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
                 return {"status": "pending", "message": "Pagamento em processamento. Sua conta será ativada em breve."}
             
             else:
-                error_detail = payment_response["response"].get("status_detail", "Pagamento rejeitado pelo MercadoPago.")
+                error_detail = payment_response["response"].get("status_detail", "Pagamento rejeitado.")
                 if uid: admin_auth.delete_user(uid)
                 salao_doc_ref.delete()
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error_detail)
@@ -267,7 +258,8 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
             except Exception as auth_err: logging.error(f"Falha no rollback do Auth: {auth_err}")
         try: db.collection("cabeleireiros").document(salao_id).delete()
         except Exception as db_err: logging.error(f"Falha no rollback do Firestore: {db_err}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Erro ao processar pagamento: {error_message}")
+        # Retorna a mensagem de erro específica do MP
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=error_message)
 
 # --- ENDPOINT PARA CRIAR ASSINATURA (LOGADO) ---
 @router.post("/pagamentos/criar-assinatura", status_code=status.HTTP_201_CREATED)

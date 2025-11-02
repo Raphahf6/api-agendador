@@ -9,6 +9,7 @@ from firebase_admin import firestore
 from google.cloud.firestore import FieldFilter
 from typing import Optional, Dict, List
 import mercadopago 
+from mercadopago.config import RequestOptions
 
 # Importações dos nossos módulos
 # <<< CORREÇÃO: Garante que estamos importando TODOS os modelos necessários de core.models >>>
@@ -147,12 +148,6 @@ async def get_available_slots_endpoint(
 
 @router.post("/agendamentos/iniciar-pagamento-sinal", status_code=status.HTTP_201_CREATED)
 async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
-    """
-    1. Valida o horário.
-    2. Cria o Cliente (CRM).
-    3. Cria o Agendamento como "pending_payment".
-    4. Processa o pagamento (Cartão) ou retorna dados (PIX).
-    """
     
     salao_id = payload.salao_id
     service_id = payload.service_id
@@ -179,10 +174,9 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
         service_price = service_info.get('preco')
         salon_email_destino = salon_data.get('calendar_id') 
         
-        # <<< CORREÇÃO DE SEGURANÇA: Busca o valor do sinal do DB, IGNORA o frontend >>>
         sinal_valor_backend = salon_data.get('sinal_valor', 0.0)
         if payload.transaction_amount != sinal_valor_backend:
-            logging.warning(f"Possível fraude! Valor do frontend ({payload.transaction_amount}) é diferente do backend ({sinal_valor_backend}). Usando valor do backend.")
+            logging.warning(f"Disparidade no valor do sinal! Frontend: {payload.transaction_amount}, Backend: {sinal_valor_backend}. Usando valor do Backend.")
             payload.transaction_amount = sinal_valor_backend
 
         if duration is None or service_name is None:
@@ -190,7 +184,7 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
             
         start_time_dt = datetime.fromisoformat(payload.start_time)
         
-        # --- 2. VERIFICAÇÃO DE HORÁRIO DISPONÍVEL (CRÍTICO) ---
+        # --- 2. VERIFICAÇÃO DE HORÁRIO DISPONÍVEL ---
         is_free = calendar_service.is_slot_available(
             salao_id=salao_id, 
             salon_data=salon_data,
@@ -212,21 +206,15 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
         # --- 4. LÓGICA DE SALVAMENTO (PENDENTE) ---
         end_time_dt = start_time_dt + timedelta(minutes=duration)
         agendamento_data = {
-            "salaoId": salao_id,
-            "serviceId": service_id,
-            "serviceName": service_name,
-            "salonName": salon_name,
+            "salaoId": salao_id, "serviceId": service_id,
+            "serviceName": service_name, "salonName": salon_name,
             "customerName": payload.customer_name.strip(),
             "customerEmail": payload.customer_email.strip(), 
             "customerPhone": payload.customer_phone,
-            "startTime": start_time_dt, 
-            "endTime": end_time_dt, 
-            "durationMinutes": duration, 
-            "servicePrice": service_price,
-            "status": "pending_payment", 
-            "createdAt": firestore.SERVER_TIMESTAMP,
-            "reminderSent": False,
-            "clienteId": cliente_id 
+            "startTime": start_time_dt, "endTime": end_time_dt, 
+            "durationMinutes": duration, "servicePrice": service_price,
+            "status": "pending_payment", "createdAt": firestore.SERVER_TIMESTAMP,
+            "reminderSent": False, "clienteId": cliente_id 
         }
         
         agendamento_ref = db.collection('cabeleireiros').document(salao_id).collection('agendamentos').document()
@@ -242,10 +230,12 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
             "number": payload.payer.identification.number
         } if payload.payer.identification else None
 
-        # --- <<< CORREÇÃO: device_id vai dentro de additional_info >>> ---
-        additional_info = {
-            "device_id": payload.device_id
-        }
+        # --- <<< CORREÇÃO CRÍTICA: Define o Objeto RequestOptions >>> ---
+        ro_obj = RequestOptions(
+            custom_headers={
+                "X-Meli-Session-Id": payload.device_id
+            }
+        )
         # --- <<< FIM DA CORREÇÃO >>> ---
 
         # --- CASO 1: PAGAMENTO COM PIX ---
@@ -257,9 +247,9 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
                 "payer": { "email": payload.payer.email, "identification": payer_identification_data },
                 "external_reference": external_reference, 
                 "notification_url": notification_url, 
-                "additional_info": additional_info # <<< ADICIONADO AQUI
+                # additional_info removido
             }
-            payment_response = mp_payment_client.create(payment_data)
+            payment_response = mp_payment_client.create(payment_data, request_options=ro_obj)
             
             if payment_response["status"] not in [200, 201]:
                 raise Exception(f"Erro MP (PIX): {payment_response.get('response').get('message', 'Erro desconhecido')}")
@@ -292,9 +282,9 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
                 "payer": { "email": payload.payer.email, "identification": payer_identification_data },
                 "external_reference": external_reference, 
                 "notification_url": notification_url,
-                "additional_info": additional_info # <<< ADICIONADO AQUI
+                # additional_info removido
             }
-            payment_response = mp_payment_client.create(payment_data)
+            payment_response = mp_payment_client.create(payment_data, request_options=ro_obj)
 
             if payment_response["status"] not in [200, 201]:
                 error_msg = payment_response.get('response', {}).get('message', 'Erro desconhecido ao processar o cartão.')
@@ -341,7 +331,8 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
         if agendamento_ref:
             try: agendamento_ref.delete()
             except Exception: pass
-        raise HTTPException(status_code=500, detail=str(e)) # Retorna a mensagem de erro do MP
+        # Retorna a mensagem de erro específica do MP (ou a genérica)
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/agendamentos", status_code=status.HTTP_201_CREATED)
 async def create_appointment(appointment: Appointment):
