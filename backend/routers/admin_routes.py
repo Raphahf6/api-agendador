@@ -14,10 +14,11 @@ from datetime import datetime, timedelta
 from pydantic import BaseModel, Field,EmailStr
 from google_auth_oauthlib.flow import Flow
 import mercadopago 
+import httpx # Importado para o OAuth do MP
 from firebase_admin import auth as admin_auth
 from mercadopago.config import RequestOptions
 
-# Importações dos modelos (Assumindo que estão em core/models.py)
+# Importações dos modelos
 from core.models import (
     ClientDetail, NewClientData, Service, ManualAppointmentData, ClienteListItem, 
     EmailPromocionalBody, NotaManualBody, TimelineItem, CalendarEvent, 
@@ -27,14 +28,13 @@ from core.models import (
 )
 from core.auth import get_current_user 
 from core.db import get_all_clients_from_db, get_hairdresser_data_from_db, db
-from services import calendar_service as calendar_service
-from services import email_service as email_service
+from services import email_service, calendar_service
 
 API_BASE_URL = "https://api-agendador.onrender.com/api/v1"
 sdk = mercadopago.SDK("TEST_ACCESS_TOKEN")
 
 # --- Constantes ---
-MARKETING_COTA_INICIAL = 100 # <<< SUA COTA DE 100 E-MAILS >>>
+MARKETING_COTA_INICIAL = 100 
 
 # --- Configuração dos Roteadores ---
 router = APIRouter(
@@ -55,12 +55,19 @@ auth_router = APIRouter(
     tags=["Autenticação"],
 )
 
-# ... (Constantes GOOGLE_CLIENT_ID, etc.) ...
+# --- Constantes do Google OAuth ---
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET")
 SCOPES = ['https://www.googleapis.com/auth/calendar']
 RENDER_API_URL = "https://api-agendador.onrender.com/api/v1" 
-REDIRECT_URI = f"{RENDER_API_URL}/api/v1/admin/google/auth/callback"
+GOOGLE_REDIRECT_URI = f"{RENDER_API_URL}/api/v1/admin/google/auth/callback"
+
+# --- Constantes do Mercado Pago OAuth ---
+MP_APP_ID = os.environ.get("MP_APP_ID")
+MP_SECRET_KEY = os.environ.get("MP_SECRET_KEY")
+MP_REDIRECT_URI = f"{RENDER_API_URL}/api/v1/admin/mercadopago/callback"
+MP_AUTH_URL = "https://auth.mercadopago.com.br/authorization"
+MP_TOKEN_URL = "https://api.mercadopago.com/oauth/token"
 
 # --- Configuração SDK Mercado Pago ---
 try:
@@ -81,16 +88,14 @@ except Exception as e:
     mp_preference_client = None
     mp_payment_client = None
 
-# --- ENDPOINT PÚBLICO DE CADASTRO PAGO DIRETO (MODIFICADO COM COTAS) ---
+# --- ENDPOINT PÚBLICO DE CADASTRO PAGO DIRETO ---
 @auth_router.post("/criar-conta-paga", status_code=status.HTTP_201_CREATED)
 async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
+    # ... (código idêntico, sem alterações) ...
     if not mp_payment_client:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Serviço de pagamento indisponível.")
-
     salao_id = payload.numero_whatsapp
     uid = None 
-
-    # --- Passo 1: Validação de Conflito ---
     try:
         admin_auth.get_user_by_email(payload.email)
         raise HTTPException(
@@ -101,7 +106,6 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
         pass 
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Erro ao verificar e-mail: {e}")
-
     try:
         salao_doc = db.collection('cabeleireiros').document(salao_id).get()
         if salao_doc.exists:
@@ -111,10 +115,7 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
             )
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Erro ao verificar dados: {e}")
-
-    # --- Passo 2: Criar Usuário no Firebase Auth ---
     try:
-        logging.info(f"Criando usuário no Auth para {payload.email}...")
         new_user = admin_auth.create_user(
             email=payload.email,
             password=payload.password,
@@ -123,11 +124,8 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
         uid = new_user.uid
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Erro ao criar usuário: {e}")
-
-    # --- Passo 3: Criar Salão no Firestore (com cotas) ---
     salao_doc_ref = db.collection("cabeleireiros").document(salao_id)
     try:
-        logging.info(f"Criando documento do salão (pending) com ID: {salao_id} para UID: {uid}...")
         now = datetime.now(pytz.utc)
         salao_data = {
             "nome_salao": payload.nome_salao,
@@ -143,17 +141,14 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
             "google_sync_enabled": False,
             "marketing_cota_total": MARKETING_COTA_INICIAL,
             "marketing_cota_usada": 0,
-            "marketing_cota_reset_em": None, 
+            "marketing_cota_reset_em": None,
         }
         salao_doc_ref.set(salao_data)
-        
     except Exception as e:
         logging.error(f"Erro ao criar salão no Firestore: {e}. Fazendo rollback do Auth...")
         if uid: admin_auth.delete_user(uid)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Erro ao salvar dados do salão: {e}")
-
     try:
-        logging.info(f"Processando pagamento para {salao_id} via {payload.payment_method_id}...")
         notification_url = f"{RENDER_API_URL}/webhooks/mercado-pago"
         
         payer_identification_data = {
@@ -161,40 +156,33 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
             "number": payload.payer.identification.number
         } if payload.payer.identification else None
 
-        # --- <<< CORREÇÃO 1: Define o Objeto RequestOptions (Header) >>> ---
         ro_obj = RequestOptions(
             custom_headers={
                 "X-Meli-Session-Id": payload.device_id
             }
         )
         
-        # --- <<< CORREÇÃO 2: Define o additional_info (Contexto Anti-Fraude) >>> ---
-        nome_completo = payload.nome_salao.strip().split() # Usando nome do salão como nome
+        nome_completo = payload.nome_salao.strip().split()
         primeiro_nome = nome_completo[0]
         ultimo_nome = nome_completo[-1] if len(nome_completo) > 1 else primeiro_nome
 
         additional_info = {
             "payer": {
-                "first_name": primeiro_nome,
-                "last_name": ultimo_nome,
+                "first_name": primeiro_nome, "last_name": ultimo_nome,
                 "phone": {
-                    "area_code": payload.numero_whatsapp[3:5], # Pega DDD do +55(XX)
+                    "area_code": payload.numero_whatsapp[3:5], 
                     "number": payload.numero_whatsapp[5:]
                 },
             },
             "items": [
                 {
-                    "id": "HoralisAssinatura",
-                    "title": "Horalis Pro (30 dias)",
-                    "description": "Assinatura Horalis",
-                    "quantity": 1,
-                    "unit_price": payload.transaction_amount,
-                    "category_id": "saas" 
+                    "id": "HoralisAssinatura", "title": "Horalis Pro (30 dias)",
+                    "description": "Assinatura Horalis", "quantity": 1, 
+                    "unit_price": payload.transaction_amount, "category_id": "saas" 
                 }
             ]
         }
 
-        # --- CASO 1: PAGAMENTO COM PIX ---
         if payload.payment_method_id == 'pix':
             payment_data = {
                 "transaction_amount": payload.transaction_amount,
@@ -203,7 +191,7 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
                 "payer": { "email": payload.payer.email, "identification": payer_identification_data },
                 "external_reference": salao_id, 
                 "notification_url": notification_url, 
-                "additional_info": additional_info #
+                "additional_info": additional_info
             }
             payment_response = mp_payment_client.create(payment_data, request_options=ro_obj)
             
@@ -214,12 +202,9 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
             qr_code_data = payment_result.get("point_of_interaction", {}).get("transaction_data", {})
             qr_code_b64 = qr_code_data.get("qr_code_base64")
             qr_code_str = qr_code_data.get("qr_code")
-
             if not qr_code_b64 or not qr_code_str:
                 raise Exception("Falha ao gerar QR Code do PIX.")
-
             salao_doc_ref.update({"mercadopagoLastPaymentId": payment_result.get("id")})
-            
             return {
                 "status": "pending_pix",
                 "message": "PIX gerado. Aguardando pagamento.",
@@ -230,7 +215,6 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
                 }
             }
         
-        # --- CASO 2: PAGAMENTO COM CARTÃO ---
         else: 
             payment_data = {
                 "transaction_amount": payload.transaction_amount,
@@ -242,8 +226,7 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
                 "payer": { "email": payload.payer.email, "identification": payer_identification_data },
                 "external_reference": salao_id, 
                 "notification_url": notification_url,
-                "additional_info": additional_info # Passa o contexto
-                
+                "additional_info": additional_info
             }
             payment_response = mp_payment_client.create(payment_data, request_options=ro_obj)
 
@@ -266,8 +249,12 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
                 })
                 return {"status": "approved", "message": "Pagamento aprovado e conta criada!"}
             
-            elif payment_status in ["in_process", "pending"]:
-                return {"status": "pending", "message": "Pagamento em processamento. Sua conta será ativada em breve."}
+            elif payment_status in ["in_process", "pending", "pending_review_manual"]:
+                logging.info(f"Assinatura (Cartão) PENDENTE ou EM REVISÃO ({payment_status}). Salão {salao_id} aguardando webhook.")
+                salao_doc_ref.update({
+                    "mercadopagoLastPaymentId": payment_response["response"].get("id")
+                })
+                return {"status": "pending_review", "message": "Seu pagamento está em análise. Você será notificado por e-mail."}
             
             else:
                 error_detail = payment_response["response"].get("status_detail", "Pagamento rejeitado.")
@@ -283,7 +270,6 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
             except Exception as auth_err: logging.error(f"Falha no rollback do Auth: {auth_err}")
         try: db.collection("cabeleireiros").document(salao_id).delete()
         except Exception as db_err: logging.error(f"Falha no rollback do Firestore: {db_err}")
-        # Retorna a mensagem de erro específica do MP
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=error_message)
 
 # --- ENDPOINT PARA CRIAR ASSINATURA (LOGADO) ---
@@ -330,18 +316,12 @@ async def create_subscription_checkout(
     }
     try:
         preference_result = mp_preference_client.create(preference_data)
-        
         if preference_result["status"] not in [200, 201]:
             raise HTTPException(status_code=500, detail="Erro ao gerar link de pagamento.")
-            
         checkout_url = preference_result["response"].get("init_point")
-        
         if not checkout_url:
              raise HTTPException(status_code=500, detail="Erro ao obter URL de checkout.")
-             
-        logging.info(f"Link de checkout (Pagamento Único) gerado para {user_email}.")
         return {"checkout_url": checkout_url}
-
     except Exception as e:
         logging.exception(f"Erro crítico ao criar pagamento MP para {user_email}: {e}")
         raise HTTPException(status_code=500, detail="Erro interno ao processar pagamento.")
@@ -366,15 +346,15 @@ async def webhook_mercado_pago(request: Request):
                 return {"status": "erro ao buscar dados"}
             
             data = payment_data["response"]
-            ref_id = data.get("external_reference") # ID de Referência (pode ser salao_id ou o ID composto)
+            ref_id = data.get("external_reference") 
             status_pagamento = data.get("status")
             
             if not ref_id:
                 return {"status": "referência externa faltando"}
-
-            # --- <<< NOVA LÓGICA DE ROTEAMENTO DO WEBHOOK >>> ---
-
-            # CASO 1: É um SINAL DE AGENDAMENTO (Formato: "agendamento__salaoId__agendamentoId")
+            
+            # --- ROTEAMENTO DO WEBHOOK ---
+            
+            # CASO 1: É um SINAL DE AGENDAMENTO
             if ref_id.startswith("agendamento__"):
                 logging.info(f"Webhook recebido para um Sinal de Agendamento: {ref_id}")
                 try:
@@ -390,13 +370,11 @@ async def webhook_mercado_pago(request: Request):
                 if status_pagamento == 'approved':
                     logging.info(f"Sinal APROVADO para agendamento {agendamento_id}. Confirmando...")
                     
-                    # Atualiza o status do agendamento
                     agendamento_ref.update({
                         "status": "confirmado",
                         "mercadopagoPaymentId": payment_id
                     })
                     
-                    # Dispara os e-mails (que não foram disparados na criação)
                     try:
                         agendamento_data = agendamento_ref.get().to_dict()
                         salon_data = get_hairdresser_data_from_db(salao_id)
@@ -421,11 +399,10 @@ async def webhook_mercado_pago(request: Request):
                         logging.error(f"Webhook (Agendamento) Aprovado, mas falhou ao enviar e-mails: {e}")
                 
                 else:
-                    # Pagamento pendente falhou (rejeitado, cancelado)
                     logging.info(f"Sinal falhou/expirou para agendamento {agendamento_id}. Status: {status_pagamento}")
-                    agendamento_ref.update({"status": status_pagamento}) # Ex: "rejected"
+                    agendamento_ref.update({"status": status_pagamento}) 
 
-            # CASO 2: É um PAGAMENTO DE ASSINATURA (Formato: salao_id)
+            # CASO 2: É um PAGAMENTO DE ASSINATURA
             else:
                 logging.info(f"Webhook recebido para uma Assinatura de Salão: {ref_id}")
                 salao_id = ref_id
@@ -461,7 +438,7 @@ async def webhook_mercado_pago(request: Request):
 
     return {"status": "tipo de evento ignorado"}
 
-# --- ENDPOINTS OAUTH ---
+# --- ENDPOINTS OAUTH GOOGLE ---
 @router.get("/google/auth/start", response_model=dict[str, str])
 async def google_auth_start(current_user: dict[str, Any] = Depends(get_current_user)):
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
@@ -477,7 +454,7 @@ async def google_auth_start(current_user: dict[str, Any] = Depends(get_current_u
     flow = Flow.from_client_config(
         client_config=client_config, 
         scopes=SCOPES,
-        redirect_uri=REDIRECT_URI
+        redirect_uri=GOOGLE_REDIRECT_URI
     )
     authorization_url, state = flow.authorization_url(
         access_type='offline',
@@ -485,6 +462,157 @@ async def google_auth_start(current_user: dict[str, Any] = Depends(get_current_u
         state=current_user.get("uid") 
     )
     return {"authorization_url": authorization_url}
+
+@callback_router.get("/google/auth/callback")
+async def google_auth_callback_handler(
+    state: str, 
+    code: str, 
+    scope: str
+):
+    logging.info(f"Recebido callback do Google para o state (UID): {state}")
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        raise HTTPException(status_code=500, detail="Integração com Google não configurada.")
+    client_config = {
+        "web": {
+            "client_id": GOOGLE_CLIENT_ID, "client_secret": GOOGLE_CLIENT_SECRET,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token"
+        }
+    }
+    flow = Flow.from_client_config(
+        client_config=client_config,
+        scopes=SCOPES,
+        redirect_uri=GOOGLE_REDIRECT_URI
+    )
+    try:
+        flow.fetch_token(code=code)
+        credentials = flow.credentials
+        refresh_token = credentials.refresh_token
+        if not refresh_token:
+            raise HTTPException(status_code=400, detail="Falha ao obter o token de atualização do Google...")
+        user_uid = state
+        clients_ref = db.collection('cabeleireiros')
+        query = clients_ref.where(filter=FieldFilter('ownerUID', '==', user_uid)).limit(1) 
+        client_doc_list = list(query.stream())
+        if not client_doc_list:
+            raise HTTPException(status_code=404, detail="Usuário autenticado, mas nenhum salão Horalis encontrado.")
+        salao_doc_ref = client_doc_list[0].reference
+        salao_doc_ref.update({
+            "google_refresh_token": refresh_token,
+            "google_sync_enabled": True
+        })
+        logging.info(f"Refresh Token do Google salvo com sucesso para o salão: {salao_doc_ref.id}")
+        frontend_redirect_url = f"https://horalis.app/painel/{salao_doc_ref.id}/configuracoes?sync=success"
+        return RedirectResponse(frontend_redirect_url)
+    except Exception as e:
+        logging.exception(f"Erro CRÍTICO durante o callback do Google OAuth: {e}")
+        frontend_error_url = f"https://horalis.app/painel/{state}/configuracoes?sync=error"
+        return RedirectResponse(frontend_error_url)
+
+# --- <<< NOVOS ENDPOINTS: AUTORIZAÇÃO MERCADOPAGO >>> ---
+@router.get("/mercadopago/auth/start", response_model=dict[str, str])
+async def mercadopago_auth_start(current_user: dict[str, Any] = Depends(get_current_user)):
+    """
+    Gera a URL de autorização do MercadoPago para o salão logado.
+    """
+    if not MP_APP_ID:
+        raise HTTPException(status_code=500, detail="Integração com MercadoPago (APP_ID) não configurada.")
+
+    # Busca o salao_id do usuário logado
+    user_uid = current_user.get("uid")
+    try:
+        clients_ref = db.collection('cabeleireiros')
+        query = clients_ref.where(filter=FieldFilter('ownerUID', '==', user_uid)).limit(1) 
+        client_doc_list = list(query.stream()) 
+        if not client_doc_list:
+            raise HTTPException(status_code=404, detail="Nenhum salão encontrado para este usuário.")
+        salao_id = client_doc_list[0].id 
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Erro ao buscar ID do salão.")
+
+    auth_url = (
+        f"{MP_AUTH_URL}?"
+        f"response_type=code&"
+        f"client_id={MP_APP_ID}&"
+        f"redirect_uri={MP_REDIRECT_URI}&"
+        f"state={salao_id}" # Passamos o salao_id no 'state'
+    )
+    
+    logging.info(f"Gerando URL de autorização MP para o salão {salao_id}...")
+    return {"authorization_url": auth_url}
+
+@callback_router.get("/mercadopago/callback")
+async def mercadopago_auth_callback_handler(
+    state: str,  # O salao_id que passamos
+    code: str    # O código de autorização temporário
+):
+    """
+    Recebe o callback do MercadoPago, troca o 'code' pelo 'access_token'
+    e salva as credenciais no documento do salão.
+    """
+    logging.info(f"Recebido callback do MercadoPago para o state (salao_id): {state}")
+    
+    if not MP_APP_ID or not MP_SECRET_KEY:
+        raise HTTPException(status_code=500, detail="Credenciais da aplicação (Marketplace) não configuradas.")
+
+    salao_id = state
+    frontend_error_url = f"https://horalis.app/painel/{salao_id}/configuracoes?mp_sync=error"
+    
+    # 1. Troca o código pelo Access Token
+    try:
+        token_payload = {
+            "client_id": MP_APP_ID,
+            "client_secret": MP_SECRET_KEY,
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": MP_REDIRECT_URI,
+        }
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.post(MP_TOKEN_URL, data=token_payload)
+            response.raise_for_status() 
+            
+            token_data = response.json()
+            
+            access_token = token_data.get("access_token")
+            refresh_token = token_data.get("refresh_token")
+            public_key = token_data.get("public_key")
+            mp_user_id = token_data.get("user_id") 
+
+            if not all([access_token, refresh_token, public_key, mp_user_id]):
+                logging.error(f"Resposta de token incompleta do MP: {token_data}")
+                raise Exception("Resposta de token incompleta do MercadoPago.")
+
+        # 2. Salva as credenciais no Firestore
+        salao_doc_ref = db.collection('cabeleireiros').document(salao_id)
+        salao_doc = salao_doc_ref.get()
+
+        if not salao_doc.exists:
+            logging.error(f"Callback do MP recebido para salão_id ({salao_id}) que não existe.")
+            return RedirectResponse(frontend_error_url)
+            
+        salao_doc_ref.update({
+            "mp_access_token": access_token,    
+            "mp_refresh_token": refresh_token,  
+            "mp_public_key": public_key,      
+            "mp_user_id": mp_user_id,
+            "mp_sync_enabled": True,          
+            "mp_last_updated": firestore.SERVER_TIMESTAMP
+        })
+
+        logging.info(f"Credenciais do MercadoPago salvas com sucesso para o salão: {salao_id}")
+        
+        # 3. Redireciona de volta para a página de configurações no frontend
+        frontend_success_url = f"https://horalis.app/painel/{salao_id}/configuracoes?mp_sync=success"
+        return RedirectResponse(frontend_success_url)
+
+    except httpx.HTTPStatusError as e:
+        logging.error(f"Erro HTTP ao trocar token do MP: {e.response.text}")
+        return RedirectResponse(frontend_error_url)
+    except Exception as e:
+        logging.exception(f"Erro CRÍTICO durante o callback do MercadoPago: {e}")
+        return RedirectResponse(frontend_error_url)
+# --- <<< FIM DOS ENDPOINTS DO MERCADO PAGO OAUTH >>> ---
 
 @router.get("/user/salao-id", response_model=dict[str, str])
 async def get_salao_id_for_user(current_user: dict[str, Any] = Depends(get_current_user)):
@@ -524,6 +652,49 @@ async def disconnect_google_sync(
     except Exception as e:
         logging.exception(f"Erro ao desativar Google Sync para salão {salao_id}: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno.")
+    
+# --- <<< NOVO ENDPOINT: Desconectar Mercado Pago >>> ---
+@router.patch("/mercadopago/disconnect/{salao_id}", status_code=status.HTTP_200_OK)
+async def disconnect_mercadopago_sync(
+    salao_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Desconecta a conta do MercadoPago do salão, removendo as credenciais OAuth.
+    """
+    user_uid = current_user.get("uid")
+    logging.info(f"Admin (UID: {user_uid}) solicitou desconexão do MercadoPago para salão: {salao_id}")
+
+    try:
+        salao_doc_ref = db.collection('cabeleireiros').document(salao_id)
+        salao_doc = salao_doc_ref.get(['ownerUID']) 
+
+        if not salao_doc.exists:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Salão não encontrado.")
+
+        salon_owner_uid = salao_doc.get('ownerUID')
+        if salon_owner_uid != user_uid:
+             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Ação não autorizada.")
+
+        # Remove todos os campos de credenciais do MP
+        salao_doc_ref.update({
+            "mp_sync_enabled": False,
+            "mp_access_token": firestore.DELETE_FIELD,
+            "mp_refresh_token": firestore.DELETE_FIELD,
+            "mp_public_key": firestore.DELETE_FIELD,
+            "mp_user_id": firestore.DELETE_FIELD,
+            "mp_last_updated": firestore.SERVER_TIMESTAMP
+        })
+
+        logging.info(f"Credenciais MercadoPago removidas com sucesso para o salão: {salao_id}")
+        return {"message": "Conta do MercadoPago desconectada com sucesso."}
+
+    except HTTPException as httpe:
+        raise httpe
+    except Exception as e:
+        logging.exception(f"Erro ao desconectar MercadoPago para salão {salao_id}: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno ao desconectar.")
+# --- <<< FIM DO NOVO ENDPOINT >>> ---
     
 # --- Endpoints CRUD de Clientes ---
 @router.get("/clientes", response_model=List[ClientDetail])
@@ -886,7 +1057,7 @@ async def google_auth_callback_handler(
     flow = Flow.from_client_config(
         client_config=client_config,
         scopes=SCOPES,
-        redirect_uri=REDIRECT_URI
+        redirect_uri=GOOGLE_REDIRECT_URI
     )
     try:
         flow.fetch_token(code=code)
@@ -937,6 +1108,37 @@ async def check_payment_status(payment_id: str):
     except Exception as e:
         logging.exception(f"Erro no Polling de Pagamento para {payment_id}: {e}")
         return {"status": "pending", "message": "Erro de comunicação. Tente o login em instantes."}
+
+# <<< NOVO ENDPOINT: Polling de Status do Agendamento >>>
+@auth_router.get("/check-agendamento-status/{salao_id}/{agendamento_id}", response_model=dict[str, str])
+async def check_agendamento_status(salao_id: str, agendamento_id: str):
+    """
+    Endpoint PÚBLICO de polling para verificar o status de um agendamento específico (PIX/Boleto).
+    """
+    logging.info(f"Polling recebido para verificar Agendamento ID: {agendamento_id} no Salão {salao_id}")
+    
+    try:
+        agendamento_ref = db.collection('cabeleireiros').document(salao_id).collection('agendamentos').document(agendamento_id)
+        agendamento_doc = agendamento_ref.get()
+
+        if not agendamento_doc.exists:
+            return {"status": "not_found", "message": "Agendamento não encontrado."}
+        
+        current_status = agendamento_doc.get('status')
+
+        if current_status == 'confirmado':
+            return {"status": "approved", "message": "Pagamento confirmado."}
+        
+        elif current_status == 'pending_payment':
+            return {"status": "pending_payment", "message": "Aguardando confirmação do PIX."}
+        
+        else:
+            return {"status": current_status, "message": "Pagamento não aprovado."}
+
+    except Exception as e:
+        logging.exception(f"Erro no Polling de Agendamento para {agendamento_id}: {e}")
+        return {"status": "error", "message": "Erro de comunicação."}
+
 
 @router.get("/clientes/{salao_id}/lista-crm", response_model=List[ClienteListItem])
 async def list_crm_clients(
@@ -1263,13 +1465,12 @@ def _process_mass_email_send(salao_id: str, subject: str, message: str, admin_em
         now_utc = datetime.now(pytz.utc)
         cota_total = salon_data.get("marketing_cota_total", MARKETING_COTA_INICIAL)
         cota_usada = salon_data.get("marketing_cota_usada", 0)
-        cota_reset_em = salon_data.get("marketing_cota_reset_em") # Vem como Timestamp
+        cota_reset_em = salon_data.get("marketing_cota_reset_em") 
         
         # 1. Verifica se a cota deve ser resetada
         if cota_reset_em and now_utc > cota_reset_em:
             logging.info(f"Resetando cota de marketing para o salão {salao_id}.")
             cota_usada = 0
-            # Define o próximo reset para daqui a 30 dias
             novo_reset = now_utc + timedelta(days=30)
             salao_doc_ref.update({
                 "marketing_cota_usada": 0,
@@ -1281,40 +1482,36 @@ def _process_mass_email_send(salao_id: str, subject: str, message: str, admin_em
         query = clientes_ref # Base da query (todos)
         
         if segmento == "inativos":
-            # Inativos = Última visita há mais de 60 dias
             inativos_start_date = now_utc - timedelta(days=60)
             query = clientes_ref.where(filter=FieldFilter('ultima_visita', '<=', inativos_start_date))
         
         elif segmento == "recentes":
-            # Recentes = Última visita nos últimos 30 dias
             recentes_start_date = now_utc - timedelta(days=30)
             query = clientes_ref.where(filter=FieldFilter('ultima_visita', '>=', recentes_start_date))
 
-        # 3. Conta quantos clientes serão enviados (sem 'stream()', usando 'get()')
+        # 3. Conta quantos clientes serão enviados
         clientes_snapshot = query.get()
         tamanho_do_envio = len(clientes_snapshot)
         
         if tamanho_do_envio == 0:
              logging.warning(f"Segmento '{segmento}' não encontrou clientes. Nenhum e-mail enviado.")
-             # (Opcional: registrar isso no admin para o usuário saber)
              return
 
         # 4. VERIFICA A COTA
         if (cota_usada + tamanho_do_envio) > cota_total:
             logging.error(f"Falha no envio em massa para {salao_id}: Cota excedida. Tentativa: {tamanho_do_envio}, Restante: {cota_total - cota_usada}")
-            # (Opcional: enviar um e-mail para o *admin* avisando da falha)
             return
             
         logging.info(f"Cota verificada. Enviando {tamanho_do_envio} e-mails. (Usado: {cota_usada}/{cota_total})")
 
-        # 5. Atualiza a cota USADA (antes de enviar)
+        # 5. Atualiza a cota USADA
         salao_doc_ref.update({
             "marketing_cota_usada": firestore.Increment(tamanho_do_envio)
         })
         
     except Exception as e:
         logging.exception(f"Erro CRÍTICO na verificação de cota: {e}")
-        return # Falha a operação inteira se a verificação de cota falhar
+        return 
 
     # --- 6. Processamento e Envio (Loop) ---
     clientes_enviados = 0
@@ -1322,12 +1519,11 @@ def _process_mass_email_send(salao_id: str, subject: str, message: str, admin_em
     EMAIL_DELAY_SECONDS = 0.1 
     import time 
     
-    # Agora iteramos sobre o snapshot que já buscamos
-    for doc in clientes_snapshot:
+    for doc in clientes_snapshot: # Usa o snapshot que já buscamos
         cliente_data = doc.to_dict()
         customer_email = cliente_data.get('email')
         customer_name = cliente_data.get('nome', 'Cliente')
-        cliente_doc_ref = doc.reference # Referência ao /clientes/{id}
+        cliente_doc_ref = doc.reference 
 
         if customer_email and customer_email.strip().lower() != 'n/a':
             try:
@@ -1341,7 +1537,6 @@ def _process_mass_email_send(salao_id: str, subject: str, message: str, admin_em
                 )
                 if email_sent:
                     clientes_enviados += 1
-                    # Registro do envio (CRM)
                     registro_ref = cliente_doc_ref.collection('registros').document()
                     registro_ref.set({
                         "tipo": "MarketingMassa",
@@ -1373,14 +1568,12 @@ async def send_mass_marketing_email(
              raise HTTPException(status_code=404, detail="Salão não encontrado.")
         salon_name = salon_data.get("nome_salao", "Seu Salão")
         
-        # <<< MUDANÇA: Verifica o status da cota ANTES de iniciar a task >>>
-        # (Isso é uma verificação rápida, a verificação real ocorre no background)
+        # <<< VERIFICAÇÃO RÁPIDA DE COTA (ANTES DE INICIAR A TASK) >>>
         now_utc = datetime.now(pytz.utc)
         cota_total = salon_data.get("marketing_cota_total", MARKETING_COTA_INICIAL)
         cota_usada = salon_data.get("marketing_cota_usada", 0)
         cota_reset_em = salon_data.get("marketing_cota_reset_em")
 
-        # Reseta se necessário (verificação rápida)
         if cota_reset_em and now_utc > cota_reset_em:
             cota_usada = 0
             
@@ -1411,35 +1604,3 @@ async def send_mass_marketing_email(
         "status": "Processamento Aceito",
         "message": f"Disparo de e-mail iniciado em segundo plano para {salon_name}."
     }
-    
-@auth_router.get("/check-agendamento-status/{salao_id}/{agendamento_id}", response_model=dict[str, str])
-async def check_agendamento_status(salao_id: str, agendamento_id: str):
-    """
-    Endpoint PÚBLICO de polling para verificar o status de um agendamento específico (PIX/Boleto).
-    """
-    logging.info(f"Polling recebido para verificar Agendamento ID: {agendamento_id} no Salão {salao_id}")
-    
-    try:
-        agendamento_ref = db.collection('cabeleireiros').document(salao_id).collection('agendamentos').document(agendamento_id)
-        agendamento_doc = agendamento_ref.get()
-
-        if not agendamento_doc.exists:
-            return {"status": "not_found", "message": "Agendamento não encontrado."}
-        
-        current_status = agendamento_doc.get('status')
-
-        if current_status == 'confirmado':
-            # O webhook já passou e confirmou!
-            return {"status": "approved", "message": "Pagamento confirmado."}
-        
-        elif current_status == 'pending_payment':
-            # Ainda pendente (PIX ainda não foi pago)
-            return {"status": "pending_payment", "message": "Aguardando confirmação do PIX."}
-        
-        else:
-            # Rejeitado, cancelado, etc.
-            return {"status": current_status, "message": "Pagamento não aprovado."}
-
-    except Exception as e:
-        logging.exception(f"Erro no Polling de Agendamento para {agendamento_id}: {e}")
-        return {"status": "error", "message": "Erro de comunicação."}

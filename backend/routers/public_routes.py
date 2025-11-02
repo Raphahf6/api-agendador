@@ -175,6 +175,7 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
         salon_email_destino = salon_data.get('calendar_id') 
         
         sinal_valor_backend = salon_data.get('sinal_valor', 0.0)
+        # (Vamos usar o valor do backend para o transaction_amount)
         if payload.transaction_amount != sinal_valor_backend:
             logging.warning(f"Disparidade no valor do sinal! Frontend: {payload.transaction_amount}, Backend: {sinal_valor_backend}. Usando valor do Backend.")
             payload.transaction_amount = sinal_valor_backend
@@ -230,39 +231,31 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
             "number": payload.payer.identification.number
         } if payload.payer.identification else None
 
-        # --- <<< CORREÇÃO CRÍTICA 1: Define o Objeto RequestOptions (Header) >>> ---
         ro_obj = RequestOptions(
-            custom_headers={
-                "X-Meli-Session-Id": payload.device_id
-            }
+            custom_headers={ "X-Meli-Session-Id": payload.device_id }
         )
         
-        # --- <<< CORREÇÃO CRÍTICA 2: Define o additional_info (Contexto Anti-Fraude) >>> ---
         nome_completo = payload.customer_name.strip().split()
         primeiro_nome = nome_completo[0]
         ultimo_nome = nome_completo[-1] if len(nome_completo) > 1 else primeiro_nome
 
         additional_info = {
             "payer": {
-                "first_name": primeiro_nome,
-                "last_name": ultimo_nome,
+                "first_name": primeiro_nome, "last_name": ultimo_nome,
                 "phone": {
-                    "area_code": payload.customer_phone[0:2], # Assume DDD
+                    "area_code": payload.customer_phone[0:2],
                     "number": payload.customer_phone[2:]
                 },
             },
             "items": [
                 {
-                    "id": service_id,
-                    "title": service_name,
+                    "id": service_id, "title": service_name,
                     "description": "Sinal de agendamento de serviço",
-                    "quantity": 1,
-                    "unit_price": payload.transaction_amount,
-                    "category_id": "services" # Categoria genérica
+                    "quantity": 1, "unit_price": payload.transaction_amount,
+                    "category_id": "services"
                 }
             ]
         }
-        # --- <<< FIM DA CORREÇÃO >>> ---
 
         # --- CASO 1: PAGAMENTO COM PIX ---
         if payload.payment_method_id == 'pix':
@@ -273,9 +266,8 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
                 "payer": { "email": payload.payer.email, "identification": payer_identification_data },
                 "external_reference": external_reference, 
                 "notification_url": notification_url, 
-                "additional_info": additional_info # Passa o contexto
+                "additional_info": additional_info
             }
-            # Passa o RequestOptions (Header)
             payment_response = mp_payment_client.create(payment_data, request_options=ro_obj)
             
             if payment_response["status"] not in [200, 201]:
@@ -308,9 +300,8 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
                 "payer": { "email": payload.payer.email, "identification": payer_identification_data },
                 "external_reference": external_reference, 
                 "notification_url": notification_url,
-                "additional_info": additional_info # Passa o contexto
+                "additional_info": additional_info
             }
-            # Passa o RequestOptions (Header)
             payment_response = mp_payment_client.create(payment_data, request_options=ro_obj)
 
             if payment_response["status"] not in [200, 201]:
@@ -344,6 +335,16 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
                     logging.error(f"Sinal pago, mas falha ao enviar e-mail: {e}")
                 
                 return {"status": "approved", "message": "Pagamento aprovado e agendamento confirmado!"}
+            
+            # --- <<< CORREÇÃO: Trata 'revisão manual' como PENDENTE >>> ---
+            elif payment_status in ["in_process", "pending", "pending_review_manual"]:
+                logging.info(f"Sinal (Cartão) PENDENTE ou EM REVISÃO ({payment_status}). Agendamento {agendamento_ref.id} aguardando webhook.")
+                agendamento_ref.update({
+                    "status": "pending_payment", # Mantém pendente
+                    "mercadopagoPaymentId": payment_response["response"].get("id")
+                })
+                # Retorna um status customizado para o frontend saber o que fazer
+                return {"status": "pending_review", "message": "Seu pagamento está em análise pelo MercadoPago. Você receberá a confirmação por e-mail."}
             
             else:
                 error_detail = payment_response["response"].get("status_detail", "Pagamento rejeitado.")
