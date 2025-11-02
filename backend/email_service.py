@@ -25,7 +25,7 @@ except Exception:
 
 # --- CONSTANTE DO E-MAIL DE ENVIO ---
 # Este é o e-mail REAL verificado no Resend. NÃO MUDE ISSO.
-SENDER_EMAIL_ADDRESS = "Agendamentos-Horalis@rebdigitalsolucoes.com.br"
+SENDER_EMAIL_ADDRESS = "Horalis-Agendamentos@horalis.app"
 
 
 # --- Função HELPER INTERNA para formatar a hora ---

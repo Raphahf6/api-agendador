@@ -11,19 +11,18 @@ from firebase_admin import firestore
 from google.cloud.firestore import FieldFilter
 from typing import List, Optional, Any, Dict
 from datetime import datetime, timedelta
-from pydantic import BaseModel, Field, EmailStr # Mantém Pydantic base, se necessário
+from pydantic import BaseModel, Field,EmailStr
+from google_auth_oauthlib.flow import Flow
 import mercadopago 
 from firebase_admin import auth as admin_auth
-from google_auth_oauthlib.flow import Flow
 
-
-# --- <<< CORREÇÃO: IMPORTAÇÃO COMPLETA DE TODOS OS MODELOS >>> ---
+# Importações dos seus modelos (certifique-se que todos estão em core/models.py)
 from core.models import (
     ClientDetail, NewClientData, Service, ManualAppointmentData, ClienteListItem, 
     EmailPromocionalBody, NotaManualBody, TimelineItem, CalendarEvent, 
     ReagendamentoBody, UserPaidSignupPayload, DashboardDataResponse, 
     PayerIdentification, PayerData, HistoricoAgendamentoItem, ClienteDetailsResponse,
-    MarketingMassaBody
+    MarketingMassaBody # <-- Importa o modelo atualizado
 )
 from core.auth import get_current_user 
 from core.db import get_all_clients_from_db, get_hairdresser_data_from_db, db
@@ -33,7 +32,7 @@ import email_service
 API_BASE_URL = "https://api-agendador.onrender.com/api/v1"
 sdk = mercadopago.SDK("TEST_ACCESS_TOKEN")
 
-# --- Configuração do Roteador Admin ---
+# --- Configuração dos Roteadores ---
 router = APIRouter(
     prefix="/admin",
     tags=["Admin"],
@@ -60,12 +59,13 @@ RENDER_API_URL = "https://api-agendador.onrender.com/api/v1"
 REDIRECT_URI = f"{RENDER_API_URL}/api/v1/admin/google/auth/callback"
 
 
-# --- <<< MODELOS Pydantic FORAM MOVIDOS PARA core/models.py >>> ---
-# (As definições de classes que estavam aqui foram removidas)
+# --- Modelos Pydantic ---
+# (Todos os modelos Pydantic agora são importados de core.models.py)
+# (Certifique-se que MarketingMassaBody em core/models.py tenha o campo 'segmento')
 
 
+# --- Configuração SDK Mercado Pago ---
 try:
-    # ... (Lógica do SDK MercadoPago idêntica) ...
     MP_ACCESS_TOKEN = os.environ.get("MERCADO_PAGO_ACCESS_TOKEN")
     if not MP_ACCESS_TOKEN:
         logging.warning("MERCADO_PAGO_ACCESS_TOKEN não está configurado.")
@@ -82,7 +82,6 @@ except Exception as e:
     sdk = None
     mp_preference_client = None
     mp_payment_client = None
-
 
 # --- ENDPOINT PÚBLICO DE CADASTRO PAGO DIRETO ---
 @auth_router.post("/criar-conta-paga", status_code=status.HTTP_201_CREATED)
@@ -243,12 +242,12 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
 async def create_subscription_checkout(
     current_user: dict = Depends(get_current_user)
 ):
+    # ... (código idêntico, mas com correção do FieldFilter) ...
     if not mp_preference_client:
         raise HTTPException(status_code=503, detail="Serviço de pagamento indisponível.")
     user_uid = current_user.get("uid")
     user_email = current_user.get("email")
     try:
-        # <<< CORREÇÃO DA SINTAXE DO WHERE >>>
         query = db.collection('cabeleireiros').where(filter=FieldFilter('ownerUID', '==', user_uid)).limit(1)
         client_doc_list = list(query.stream())
         if not client_doc_list:
@@ -268,7 +267,7 @@ async def create_subscription_checkout(
                 "description": "Acesso completo à plataforma Horalis por 30 dias.",
                 "quantity": 1,
                 "currency_id": "BRL",
-                "unit_price": 19.99
+                "unit_price": 19.99 
             }
         ],
         "payer": { "email": user_email },
@@ -801,7 +800,7 @@ async def google_auth_callback_handler(
     code: str, 
     scope: str
 ):
-    # ... (código idêntico, sem alterações) ...
+    # ... (código idêntico, mas com correção do FieldFilter) ...
     logging.info(f"Recebido callback do Google para o state (UID): {state}")
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
         logging.error("Credenciais OAuth do Google não configuradas no ambiente.")
@@ -968,6 +967,7 @@ async def get_cliente_details_and_history(
         logging.exception(f"Erro CRÍTICO ao buscar detalhes do cliente {cliente_id}: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno.")
 
+
 @router.post("/clientes/adicionar-nota", status_code=status.HTTP_201_CREATED, response_model=TimelineItem)
 async def adicionar_nota_manual(
     body: NotaManualBody,
@@ -999,6 +999,7 @@ async def adicionar_nota_manual(
     except Exception as e:
         logging.exception(f"Erro ao adicionar nota manual: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno ao salvar nota.")
+    
     
 @router.post("/clientes/enviar-promocional", status_code=status.HTTP_200_OK)
 async def send_promotional_email_endpoint(
@@ -1132,7 +1133,7 @@ async def get_dashboard_data_consolidated(
         chart_end = now_utc
         
         
-        # --- Queries Firestone (AGORA SEGURAS E CORRIGIDAS) ---
+        # --- Queries Firestone (CORRIGIDAS) ---
         novos_clientes_query = clientes_ref.where(filter=FieldFilter('data_cadastro', '>=', clientes_start)).where(filter=FieldFilter('data_cadastro', '<=', clientes_end))
         foco_query = agendamentos_ref.where(filter=FieldFilter('startTime', '>=', foco_start)).where(filter=FieldFilter('startTime', '<', foco_end)).where(filter=FieldFilter('status', '!=', 'cancelado'))
         receita_query = agendamentos_ref.where(filter=FieldFilter('startTime', '>=', receita_start)).where(filter=FieldFilter('status', '!=', 'cancelado'))
@@ -1174,7 +1175,7 @@ async def get_dashboard_data_consolidated(
         logging.exception(f"Erro no endpoint consolidado do dashboard: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno ao carregar dados do dashboard.")
 
-# --- <<< NOVO ENDPOINT: ENVIO DE E-MAIL EM MASSA >>> ---
+# --- Endpoint de Envio de E-mail em Massa ---
 def _process_mass_email_send(salao_id: str, subject: str, message: str, admin_email: str):
     # ... (código idêntico, sem alterações) ...
     logging.info(f"THREAD DE BACKGROUND: Iniciando envio em massa para salão {salao_id}.")
