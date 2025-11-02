@@ -8,7 +8,9 @@ from typing import List, Dict, Any, Optional
 import backend.services.calendar_service as calendar_service
 from core.db import get_hairdresser_data_from_db
 from core.models import SalonPublicDetails, Service, Appointment
-
+import mercadopago 
+from google.cloud.firestore import FieldFilter
+import pytz
 # Cria um novo "roteador". Pense nele como um mini-aplicativo FastAPI.
 # Todos os endpoints aqui serão prefixados com /api/v1 (definiremos isso no main.py)
 router = APIRouter(

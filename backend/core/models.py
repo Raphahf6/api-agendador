@@ -171,3 +171,21 @@ class MarketingMassaBody(BaseModel):
     subject: str = Field(..., min_length=5)
     message: str = Field(..., min_length=10)
     segmento: str = "todos"
+    
+    
+class AppointmentPaymentPayload(BaseModel):
+    # Dados do Agendamento (do formulário)
+    salao_id: str
+    service_id: str
+    start_time: str # Formato ISO
+    customer_name: str = Field(..., min_length=2)
+    customer_email: str = Field(..., pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+    customer_phone: str = Field(..., pattern=r"^(?:\+55)?\d{10,11}$")
+    
+    # Dados do Pagamento (do Brick)
+    token: Optional[str] = None
+    issuer_id: Optional[str] = None
+    payment_method_id: str
+    transaction_amount: float # Valor do SINAL
+    installments: Optional[int] = None
+    payer: PayerData

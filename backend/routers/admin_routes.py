@@ -334,37 +334,92 @@ async def webhook_mercado_pago(request: Request):
                 return {"status": "erro ao buscar dados"}
             
             data = payment_data["response"]
-            salao_id = data.get("external_reference")
+            ref_id = data.get("external_reference") # ID de Referência (pode ser salao_id ou o ID composto)
             status_pagamento = data.get("status")
             
-            if not salao_id:
+            if not ref_id:
                 return {"status": "referência externa faltando"}
 
-            salao_doc_ref = db.collection('cabeleireiros').document(salao_id)
-            
-            if status_pagamento == 'approved':
-                new_paid_until = datetime.now(pytz.utc) + timedelta(days=30)
-                logging.info(f"Pagamento APROVADO. Atualizando assinatura para 'active' para o salão: {salao_id}...")
+            # --- <<< NOVA LÓGICA DE ROTEAMENTO DO WEBHOOK >>> ---
+
+            # CASO 1: É um SINAL DE AGENDAMENTO (Formato: "agendamento__salaoId__agendamentoId")
+            if ref_id.startswith("agendamento__"):
+                logging.info(f"Webhook recebido para um Sinal de Agendamento: {ref_id}")
+                try:
+                    parts = ref_id.split("__")
+                    salao_id = parts[1]
+                    agendamento_id = parts[2]
+                except Exception:
+                    logging.error(f"Webhook falhou. Formato de external_reference inválido: {ref_id}")
+                    return {"status": "referência inválida"}
+
+                agendamento_ref = db.collection('cabeleireiros').document(salao_id).collection('agendamentos').document(agendamento_id)
                 
-                # <<< CORREÇÃO: ADICIONA/RESETA COTAS NO PAGAMENTO APROVADO >>>
-                salao_doc_ref.update({
-                    "subscriptionStatus": "active",
-                    "paidUntil": new_paid_until,
-                    "mercadopagoLastPaymentId": payment_id,
-                    "subscriptionLastUpdated": firestore.SERVER_TIMESTAMP,
+                if status_pagamento == 'approved':
+                    logging.info(f"Sinal APROVADO para agendamento {agendamento_id}. Confirmando...")
                     
-                    "marketing_cota_total": MARKETING_COTA_INICIAL,
-                    "marketing_cota_usada": 0, # Zera a cota usada
-                    "marketing_cota_reset_em": new_paid_until # Data de reset
-                })
-            elif status_pagamento in ['rejected', 'cancelled', 'refunded']:
-                logging.info(f"Pagamento falhou ou foi revertido. Status: '{status_pagamento}' para o salão: {salao_id}")
-                salao_doc_ref.update({
-                    "subscriptionStatus": status_pagamento,
-                    "subscriptionLastUpdated": firestore.SERVER_TIMESTAMP
-                })
+                    # Atualiza o status do agendamento
+                    agendamento_ref.update({
+                        "status": "confirmado",
+                        "mercadopagoPaymentId": payment_id
+                    })
+                    
+                    # Dispara os e-mails (que não foram disparados na criação)
+                    try:
+                        agendamento_data = agendamento_ref.get().to_dict()
+                        salon_data = get_hairdresser_data_from_db(salao_id)
+                        
+                        email_service.send_confirmation_email_to_salon(
+                            salon_email=salon_data.get('calendar_id'), 
+                            salon_name=salon_data.get('nome_salao'), 
+                            customer_name=agendamento_data.get('customerName'), 
+                            client_phone=agendamento_data.get('customerPhone'), 
+                            service_name=agendamento_data.get('serviceName'), 
+                            start_time_iso=agendamento_data.get('startTime').isoformat()
+                        )
+                        email_service.send_confirmation_email_to_customer(
+                            customer_email=agendamento_data.get('customerEmail'), 
+                            customer_name=agendamento_data.get('customerName'),
+                            service_name=agendamento_data.get('serviceName'), 
+                            start_time_iso=agendamento_data.get('startTime').isoformat(),
+                            salon_name=salon_data.get('nome_salao'),
+                            salao_id=salao_id
+                        )
+                    except Exception as e:
+                        logging.error(f"Webhook (Agendamento) Aprovado, mas falhou ao enviar e-mails: {e}")
+                
+                else:
+                    # Pagamento pendente falhou (rejeitado, cancelado)
+                    logging.info(f"Sinal falhou/expirou para agendamento {agendamento_id}. Status: {status_pagamento}")
+                    agendamento_ref.update({"status": status_pagamento}) # Ex: "rejected"
+
+            # CASO 2: É um PAGAMENTO DE ASSINATURA (Formato: salao_id)
             else:
-                logging.info(f"Webhook de pagamento recebido com status: '{status_pagamento}'. Aguardando aprovação.")
+                logging.info(f"Webhook recebido para uma Assinatura de Salão: {ref_id}")
+                salao_id = ref_id
+                salao_doc_ref = db.collection('cabeleireiros').document(salao_id)
+                
+                if status_pagamento == 'approved':
+                    new_paid_until = datetime.now(pytz.utc) + timedelta(days=30)
+                    logging.info(f"Assinatura APROVADA. Atualizando para 'active' o salão: {salao_id}...")
+                    
+                    salao_doc_ref.update({
+                        "subscriptionStatus": "active",
+                        "paidUntil": new_paid_until,
+                        "mercadopagoLastPaymentId": payment_id,
+                        "subscriptionLastUpdated": firestore.SERVER_TIMESTAMP,
+                        "marketing_cota_total": MARKETING_COTA_INICIAL,
+                        "marketing_cota_usada": 0, 
+                        "marketing_cota_reset_em": new_paid_until
+                    })
+                elif status_pagamento in ['rejected', 'cancelled', 'refunded']:
+                    logging.info(f"Assinatura falhou. Status: '{status_pagamento}' para o salão: {salao_id}")
+                    salao_doc_ref.update({
+                        "subscriptionStatus": status_pagamento,
+                        "subscriptionLastUpdated": firestore.SERVER_TIMESTAMP
+                    })
+                else:
+                    logging.info(f"Webhook de assinatura recebido com status: '{status_pagamento}'. Aguardando.")
 
             return {"status": "recebido"}
             
