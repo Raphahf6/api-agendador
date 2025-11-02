@@ -167,4 +167,4 @@ class MarketingMassaBody(BaseModel):
     salao_id: str
     subject: str = Field(..., min_length=5)
     message: str = Field(..., min_length=10)
-    segmento: str
+    segmento: str = "todos"

@@ -16,13 +16,13 @@ from google_auth_oauthlib.flow import Flow
 import mercadopago 
 from firebase_admin import auth as admin_auth
 
-# Importações dos seus modelos (certifique-se que todos estão em core/models.py)
+# Importações dos seus modelos (agora incluindo MarketingMassaBody)
 from core.models import (
     ClientDetail, NewClientData, Service, ManualAppointmentData, ClienteListItem, 
     EmailPromocionalBody, NotaManualBody, TimelineItem, CalendarEvent, 
     ReagendamentoBody, UserPaidSignupPayload, DashboardDataResponse, 
     PayerIdentification, PayerData, HistoricoAgendamentoItem, ClienteDetailsResponse,
-    MarketingMassaBody # <-- Importa o modelo atualizado
+    MarketingMassaBody
 )
 from core.auth import get_current_user 
 from core.db import get_all_clients_from_db, get_hairdresser_data_from_db, db
@@ -51,7 +51,7 @@ auth_router = APIRouter(
     tags=["Autenticação"],
 )
 
-# ... (Constantes GOOGLE_CLIENT_ID, etc.) ...
+# ... (Constantes GOOGLE_CLIENT_ID, etc. - Sem alteração) ...
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET")
 SCOPES = ['https://www.googleapis.com/auth/calendar']
@@ -60,8 +60,7 @@ REDIRECT_URI = f"{RENDER_API_URL}/api/v1/admin/google/auth/callback"
 
 
 # --- Modelos Pydantic ---
-# (Todos os modelos Pydantic agora são importados de core.models.py)
-# (Certifique-se que MarketingMassaBody em core/models.py tenha o campo 'segmento')
+# (Todos os modelos Pydantic agora são importados de core/models.py)
 
 
 # --- Configuração SDK Mercado Pago ---
@@ -242,7 +241,7 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
 async def create_subscription_checkout(
     current_user: dict = Depends(get_current_user)
 ):
-    # ... (código idêntico, mas com correção do FieldFilter) ...
+    # ... (código idêntico, com correção do FieldFilter) ...
     if not mp_preference_client:
         raise HTTPException(status_code=503, detail="Serviço de pagamento indisponível.")
     user_uid = current_user.get("uid")
@@ -267,7 +266,7 @@ async def create_subscription_checkout(
                 "description": "Acesso completo à plataforma Horalis por 30 dias.",
                 "quantity": 1,
                 "currency_id": "BRL",
-                "unit_price": 19.99 
+                "unit_price": 19.90 # Preço atualizado
             }
         ],
         "payer": { "email": user_email },
@@ -390,11 +389,11 @@ async def google_auth_start(current_user: dict[str, Any] = Depends(get_current_u
 
 @router.get("/user/salao-id", response_model=dict[str, str])
 async def get_salao_id_for_user(current_user: dict[str, Any] = Depends(get_current_user)):
+    # ... (código idêntico, com correção do FieldFilter) ...
     user_uid = current_user.get("uid")
     logging.info(f"Admin (UID: {user_uid}) solicitou ID do salão.")
     try:
         clients_ref = db.collection('cabeleireiros')
-        # <<< CORREÇÃO DA SINTAXE DO WHERE >>>
         query = clients_ref.where(filter=FieldFilter('ownerUID', '==', user_uid)).limit(1) 
         client_doc_list = list(query.stream()) 
         if not client_doc_list:
@@ -825,7 +824,6 @@ async def google_auth_callback_handler(
             raise HTTPException(status_code=400, detail="Falha ao obter o token de atualização do Google. Tente remover o acesso Horalis da sua conta Google e tente novamente.")
         user_uid = state
         clients_ref = db.collection('cabeleireiros')
-        # <<< CORREÇÃO DA SINTAXE DO WHERE >>>
         query = clients_ref.where(filter=FieldFilter('ownerUID', '==', user_uid)).limit(1) 
         client_doc_list = list(query.stream())
         if not client_doc_list:
@@ -966,7 +964,6 @@ async def get_cliente_details_and_history(
     except Exception as e:
         logging.exception(f"Erro CRÍTICO ao buscar detalhes do cliente {cliente_id}: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno.")
-
 
 @router.post("/clientes/adicionar-nota", status_code=status.HTTP_201_CREATED, response_model=TimelineItem)
 async def adicionar_nota_manual(
