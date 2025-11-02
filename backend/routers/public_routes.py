@@ -10,8 +10,8 @@ from typing import Optional, Dict, List
 # Importações dos seus módulos
 from core.models import SalonPublicDetails, Service, Appointment, Cliente
 from core.db import get_hairdresser_data_from_db, db 
-import backend.calendar_service as calendar_service
-import backend.email_service as email_service 
+from services import calendar_service as calendar_service
+from services import email_service as email_service
 
 # --- Constantes ---
 CLIENTE_COLLECTION = 'clientes' 

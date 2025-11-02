@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException, Query, status, Depends
 from typing import List, Dict, Any, Optional
 
 # Importações relativas da nossa nova estrutura
-import calendar_service
+import backend.services.calendar_service as calendar_service
 from core.db import get_hairdresser_data_from_db
 from core.models import SalonPublicDetails, Service, Appointment
 

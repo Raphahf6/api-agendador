@@ -26,8 +26,8 @@ from core.models import (
 )
 from core.auth import get_current_user 
 from core.db import get_all_clients_from_db, get_hairdresser_data_from_db, db
-import calendar_service 
-import email_service 
+from services import calendar_service as calendar_service
+from services import email_service as email_service
 
 API_BASE_URL = "https://api-agendador.onrender.com/api/v1"
 sdk = mercadopago.SDK("TEST_ACCESS_TOKEN")
