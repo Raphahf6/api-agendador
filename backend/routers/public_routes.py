@@ -1,29 +1,32 @@
 # backend/routers/public_routes.py
 import logging
 import re
-import os # <<< ADICIONADO
-import pytz # <<< ADICIONADO
+import os 
+import pytz 
 from fastapi import APIRouter, HTTPException, Query, status, Depends
 from datetime import datetime, timedelta 
 from firebase_admin import firestore 
 from google.cloud.firestore import FieldFilter
 from typing import Optional, Dict, List
-import mercadopago # <<< ADICIONADO
+import mercadopago 
 
 # Importações dos nossos módulos
-# <<< ADICIONADO AppointmentPaymentPayload >>>
+# <<< CORREÇÃO: Garante que estamos importando TODOS os modelos necessários de core.models >>>
 from core.models import SalonPublicDetails, Service, Appointment, Cliente, AppointmentPaymentPayload
 from core.db import get_hairdresser_data_from_db, db 
-from services import calendar_service, email_service
+# <<< MUDANÇA: Mudei a importação dos seus serviços para um diretório 'services' >>>
+# (Se seus arquivos calendar_service e email_service estiverem na raiz, mude esta linha)
+from services import calendar_service, email_service 
+
 # --- Constantes ---
 CLIENTE_COLLECTION = 'clientes' 
-RENDER_API_URL = "https://api-agendador.onrender.com/api/v1" # (Necessário para o Webhook)
+RENDER_API_URL = "https://api-agendador.onrender.com/api/v1"
 
 router = APIRouter(
     tags=["Cliente Final"] 
 )
 
-# --- <<< NOVO: Configuração SDK Mercado Pago (Duplicado do admin_routes) >>> ---
+# --- Configuração SDK Mercado Pago ---
 try:
     MP_ACCESS_TOKEN = os.environ.get("MERCADO_PAGO_ACCESS_TOKEN")
     if not MP_ACCESS_TOKEN:
@@ -32,43 +35,33 @@ try:
         mp_payment_client = None
     else:
         sdk = mercadopago.SDK(MP_ACCESS_TOKEN)
-        mp_payment_client = sdk.payment() # Só precisamos do cliente de pagamento aqui
+        mp_payment_client = sdk.payment()
         logging.info("SDK do Mercado Pago (Payment) inicializado em public_routes.")
 except Exception as e:
     logging.error(f"Erro ao inicializar SDK Mercado Pago (public_routes): {e}")
     sdk = None
     mp_payment_client = None
-# --- <<< FIM DA ADIÇÃO >>> ---
+# --- FIM DA ADIÇÃO ---
 
 
 # --- Função Utility para o CRM ---
 def check_and_update_cliente_profile(
     salao_id: str, 
-    # Usamos o payload que contém os dados do cliente
     appointment_data: (Appointment | AppointmentPaymentPayload) 
 ) -> Optional[str]:
-    """
-    Verifica se o cliente já existe pelo e-mail ou WhatsApp. 
-    Se não, cria um novo perfil.
-    Retorna o ID do cliente (existente ou recém-criado).
-    """
     
     cliente_email = appointment_data.customer_email.strip()
     cliente_whatsapp = appointment_data.customer_phone
     
     clientes_subcollection = db.collection('cabeleireiros').document(salao_id).collection('clientes')
 
-    # 1. Busca pelo E-mail (Prioridade)
     query_email = clientes_subcollection.where(filter=FieldFilter("email", "==", cliente_email)).limit(1).stream()
     cliente_doc = next(query_email, None)
 
-    # 2. Se não achou por email, busca por WhatsApp
     if not cliente_doc:
         query_whatsapp = clientes_subcollection.where(filter=FieldFilter("whatsapp", "==", cliente_whatsapp)).limit(1).stream()
         cliente_doc = next(query_whatsapp, None)
 
-    
-    # --- Cliente Encontrado: Atualiza a última visita ---
     if cliente_doc:
         cliente_id = cliente_doc.id
         logging.info(f"Cliente existente encontrado (ID: {cliente_id}). Atualizando visita.")
@@ -80,9 +73,6 @@ def check_and_update_cliente_profile(
         except Exception as e:
             logging.error(f"Falha ao atualizar última visita do cliente {cliente_id}: {e}")
             return cliente_id
-
-    
-    # --- Cliente NÃO Encontrado: Cria um novo perfil ---
     else:
         try:
             logging.info(f"Cliente novo. Criando perfil CRM para {cliente_email}.")
@@ -108,17 +98,23 @@ def check_and_update_cliente_profile(
 
 
 # --- Endpoint GET /saloes/{salao_id}/servicos (Sem alterações) ---
+# <<< ESTE ENDPOINT ESTÁ CORRETO. A MUDANÇA ESTÁ NO core/models.py >>>
 @router.get("/saloes/{salao_id}/servicos", response_model=SalonPublicDetails)
 def get_salon_services_and_details(salao_id: str):
     logging.info(f"Buscando detalhes/serviços para: {salao_id}")
     salon_data = get_hairdresser_data_from_db(salao_id) 
     if not salon_data:
         raise HTTPException(status_code=404, detail="Salão não encontrado")
+    
     services_list_formatted = []
     if salon_data.get("servicos_data"):
         for service_id, service_info in salon_data["servicos_data"].items():
             services_list_formatted.append(Service(id=service_id, **service_info)) 
+    
+    # Esta linha automaticamente inclui 'mp_public_key' e 'sinal_valor'
+    # porque 'SalonPublicDetails' (em core/models.py) agora os possui.
     response_data = SalonPublicDetails(servicos=services_list_formatted, **salon_data) 
+    
     return response_data
 
 # --- Endpoint GET /saloes/{salao_id}/horarios-disponiveis (Sem alterações) ---
@@ -147,7 +143,7 @@ async def get_available_slots_endpoint(
         logging.exception(f"Erro CRÍTICO no cálculo de slots (Híbrido):")
         raise HTTPException(status_code=500, detail="Erro interno ao calcular horários.")
 
-# --- Endpoint POST /agendamentos (SUBSTITUÍDO) ---
+# --- Endpoint POST /agendamentos/iniciar-pagamento-sinal (MODIFICADO) ---
 @router.post("/agendamentos/iniciar-pagamento-sinal", status_code=status.HTTP_201_CREATED)
 async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
     """
@@ -164,7 +160,7 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
     if not mp_payment_client:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Serviço de pagamento indisponível.")
 
-    agendamento_ref = None # Inicializa para o bloco finally
+    agendamento_ref = None 
 
     try:
         # --- 1. Validações e Busca de Dados ---
@@ -181,6 +177,13 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
         salon_name = salon_data.get('nome_salao')
         service_price = service_info.get('preco')
         salon_email_destino = salon_data.get('calendar_id') 
+        
+        # <<< CORREÇÃO DE SEGURANÇA: Busca o valor do sinal do DB, IGNORA o frontend >>>
+        sinal_valor_backend = salon_data.get('sinal_valor', 0.0)
+        if payload.transaction_amount != sinal_valor_backend:
+            logging.warning(f"Possível fraude! Valor do frontend ({payload.transaction_amount}) é diferente do backend ({sinal_valor_backend}).")
+            # Sempre usamos o valor do backend
+            payload.transaction_amount = sinal_valor_backend
 
         if duration is None or service_name is None:
             raise HTTPException(status_code=500, detail="Dados do serviço incompletos.")
@@ -220,21 +223,18 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
             "endTime": end_time_dt, 
             "durationMinutes": duration, 
             "servicePrice": service_price,
-            "status": "pending_payment", # <<< STATUS PENDENTE
+            "status": "pending_payment", 
             "createdAt": firestore.SERVER_TIMESTAMP,
             "reminderSent": False,
             "clienteId": cliente_id 
         }
         
-        # Cria o documento de agendamento PENDENTE
         agendamento_ref = db.collection('cabeleireiros').document(salao_id).collection('agendamentos').document()
         agendamento_ref.set(agendamento_data)
         logging.info(f"Agendamento 'pending_payment' salvo no Firestore com ID: {agendamento_ref.id}")
 
         # --- 5. Processar o Pagamento ---
         notification_url = f"{RENDER_API_URL}/webhooks/mercado-pago"
-        
-        # <<< CHAVE: Referência composta para o webhook saber o que atualizar >>>
         external_reference = f"agendamento__{salao_id}__{agendamento_ref.id}"
         
         payer_identification_data = {
@@ -242,7 +242,7 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
             "number": payload.payer.identification.number
         } if payload.payer.identification else None
 
-        # --- CASO 1: PAGAMENTO COM PIX (ou Boleto) ---
+        # --- CASO 1: PAGAMENTO COM PIX ---
         if payload.payment_method_id == 'pix':
             payment_data = {
                 "transaction_amount": payload.transaction_amount,
@@ -269,11 +269,11 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
                     "qr_code": qr_code_data.get("qr_code"),
                     "qr_code_base64": qr_code_data.get("qr_code_base64"),
                     "payment_id": payment_result.get("id"),
-                    "agendamento_id_ref": agendamento_ref.id # <<< ADICIONA O ID DO AGENDAMENTO
+                    "agendamento_id_ref": agendamento_ref.id 
                 }
             }
         
-        # --- CASO 2: PAGAMENTO COM CARTÃO (Aprovação imediata) ---
+        # --- CASO 2: PAGAMENTO COM CARTÃO ---
         else:
             payment_data = {
                 "transaction_amount": payload.transaction_amount,
@@ -302,7 +302,6 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
                     "mercadopagoPaymentId": payment_response["response"].get("id")
                 })
                 
-                # Dispara e-mails (pois o webhook não será chamado)
                 try:
                     if salon_email_destino:
                         email_service.send_confirmation_email_to_salon(
@@ -327,7 +326,7 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error_detail)
 
     except HTTPException as httpe: 
-        if agendamento_ref: agendamento_ref.delete() # Rollback em caso de 409 (conflito)
+        if agendamento_ref: agendamento_ref.delete()
         raise httpe
     except Exception as e:
         logging.exception(f"Erro CRÍTICO ao criar agendamento com sinal: {e}")
