@@ -140,10 +140,9 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
             "trialEndsAt": None,
             "mercadopago_customer_id": None,
             "google_sync_enabled": False,
-            # --- <<< ADICIONA CAMPOS DE COTA INICIAL (PENDENTE) >>> ---
             "marketing_cota_total": MARKETING_COTA_INICIAL,
             "marketing_cota_usada": 0,
-            "marketing_cota_reset_em": None, # Só define no pagamento
+            "marketing_cota_reset_em": None, 
         }
         salao_doc_ref.set(salao_data)
         
@@ -162,6 +161,14 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
             "number": payload.payer.identification.number
         } if payload.payer.identification else None
 
+        # --- <<< CORREÇÃO CRÍTICA: Define o Header (Device ID) >>> ---
+        request_options = {
+            "custom_headers": {
+                "X-Meli-Session-Id": payload.device_id
+            }
+        }
+        # --- <<< FIM DA CORREÇÃO >>> ---
+
         # --- CASO 1: PAGAMENTO COM PIX ---
         if payload.payment_method_id == 'pix':
             payment_data = {
@@ -171,11 +178,10 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
                 "payer": { "email": payload.payer.email, "identification": payer_identification_data },
                 "external_reference": salao_id, 
                 "notification_url": notification_url, 
-                "additional_info": {
-                    "device_id": payload.device_id
-                }
+                # "additional_info" (removido)
             }
-            payment_response = mp_payment_client.create(payment_data)
+            # Passa os headers customizados para a chamada da SDK
+            payment_response = mp_payment_client.create(payment_data, request_options)
             
             if payment_response["status"] not in [200, 201]:
                 raise Exception(f"Erro MercadoPago (PIX): {payment_response.get('response').get('message', 'Erro desconhecido ao processar PIX')}")
@@ -212,11 +218,10 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
                 "payer": { "email": payload.payer.email, "identification": payer_identification_data },
                 "external_reference": salao_id, 
                 "notification_url": notification_url,
-                "additional_info": {
-                    "device_id": payload.device_id
-                }
+                # "additional_info" (removido)
             }
-            payment_response = mp_payment_client.create(payment_data)
+            # Passa os headers customizados para a chamada da SDK
+            payment_response = mp_payment_client.create(payment_data, request_options)
 
             if payment_response["status"] not in [200, 201]:
                 error_msg = payment_response.get('response', {}).get('message', 'Erro desconhecido ao processar o cartão.')
@@ -228,7 +233,6 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
                 logging.info(f"Pagamento APROVADO instantaneamente para {salao_id}.")
                 new_paid_until = datetime.now(pytz.utc) + timedelta(days=30)
                 
-                # <<< ADICIONA COTAS NO PAGAMENTO APROVADO >>>
                 salao_doc_ref.update({
                     "subscriptionStatus": "active",
                     "paidUntil": new_paid_until,
