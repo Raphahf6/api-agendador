@@ -160,6 +160,10 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
             "type": payload.payer.identification.type,
             "number": payload.payer.identification.number
         } if payload.payer.identification else None
+        
+        additional_info = {
+            "device_id": payload.device_id
+        }
 
         # --- <<< CORREÇÃO CRÍTICA: Define o Header (Device ID) >>> ---
         request_options = {
@@ -178,7 +182,7 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
                 "payer": { "email": payload.payer.email, "identification": payer_identification_data },
                 "external_reference": salao_id, 
                 "notification_url": notification_url, 
-                # "additional_info" (removido)
+                "additional_info": additional_info
             }
             # Passa os headers customizados para a chamada da SDK
             payment_response = mp_payment_client.create(payment_data, request_options)
@@ -218,7 +222,8 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
                 "payer": { "email": payload.payer.email, "identification": payer_identification_data },
                 "external_reference": salao_id, 
                 "notification_url": notification_url,
-                # "additional_info" (removido)
+                "additional_info": additional_info
+                
             }
             # Passa os headers customizados para a chamada da SDK
             payment_response = mp_payment_client.create(payment_data, request_options)

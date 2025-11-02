@@ -151,8 +151,7 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
     1. Valida o horário.
     2. Cria o Cliente (CRM).
     3. Cria o Agendamento como "pending_payment".
-    4. Processa o pagamento (Cartão) ou retorna dados (PIX)
-       ENVIANDO O DEVICE ID NO HEADER 'X-Meli-Session-Id'.
+    4. Processa o pagamento (Cartão) ou retorna dados (PIX).
     """
     
     salao_id = payload.salao_id
@@ -180,9 +179,10 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
         service_price = service_info.get('preco')
         salon_email_destino = salon_data.get('calendar_id') 
         
+        # <<< CORREÇÃO DE SEGURANÇA: Busca o valor do sinal do DB, IGNORA o frontend >>>
         sinal_valor_backend = salon_data.get('sinal_valor', 0.0)
         if payload.transaction_amount != sinal_valor_backend:
-            logging.warning(f"Disparidade no valor do sinal! Frontend: {payload.transaction_amount}, Backend: {sinal_valor_backend}. Usando valor do Backend.")
+            logging.warning(f"Possível fraude! Valor do frontend ({payload.transaction_amount}) é diferente do backend ({sinal_valor_backend}). Usando valor do backend.")
             payload.transaction_amount = sinal_valor_backend
 
         if duration is None or service_name is None:
@@ -190,7 +190,7 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
             
         start_time_dt = datetime.fromisoformat(payload.start_time)
         
-        # --- 2. VERIFICAÇÃO DE HORÁRIO DISPONÍVEL ---
+        # --- 2. VERIFICAÇÃO DE HORÁRIO DISPONÍVEL (CRÍTICO) ---
         is_free = calendar_service.is_slot_available(
             salao_id=salao_id, 
             salon_data=salon_data,
@@ -242,11 +242,9 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
             "number": payload.payer.identification.number
         } if payload.payer.identification else None
 
-        # --- <<< CORREÇÃO CRÍTICA: Define o Header (Device ID) >>> ---
-        request_options = {
-            "custom_headers": {
-                "X-Meli-Session-Id": payload.device_id
-            }
+        # --- <<< CORREÇÃO: device_id vai dentro de additional_info >>> ---
+        additional_info = {
+            "device_id": payload.device_id
         }
         # --- <<< FIM DA CORREÇÃO >>> ---
 
@@ -259,18 +257,18 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
                 "payer": { "email": payload.payer.email, "identification": payer_identification_data },
                 "external_reference": external_reference, 
                 "notification_url": notification_url, 
-                # device_id removido daqui
+                "additional_info": additional_info # <<< ADICIONADO AQUI
             }
-            # Passa os headers customizados para a chamada da SDK
-            payment_response = mp_payment_client.create(payment_data, request_options)
+            payment_response = mp_payment_client.create(payment_data)
             
             if payment_response["status"] not in [200, 201]:
                 raise Exception(f"Erro MP (PIX): {payment_response.get('response').get('message', 'Erro desconhecido')}")
 
-            # ... (resto da lógica do PIX)
             payment_result = payment_response["response"]
             qr_code_data = payment_result.get("point_of_interaction", {}).get("transaction_data", {})
+            
             agendamento_ref.update({"mercadopagoPaymentId": payment_result.get("id")})
+            
             return {
                 "status": "pending_pix",
                 "message": "PIX gerado. Aguardando pagamento.",
@@ -294,10 +292,9 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
                 "payer": { "email": payload.payer.email, "identification": payer_identification_data },
                 "external_reference": external_reference, 
                 "notification_url": notification_url,
-                # device_id removido daqui
+                "additional_info": additional_info # <<< ADICIONADO AQUI
             }
-            # Passa os headers customizados para a chamada da SDK
-            payment_response = mp_payment_client.create(payment_data, request_options)
+            payment_response = mp_payment_client.create(payment_data)
 
             if payment_response["status"] not in [200, 201]:
                 error_msg = payment_response.get('response', {}).get('message', 'Erro desconhecido ao processar o cartão.')
@@ -314,7 +311,6 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
                 })
                 
                 try:
-                    # ... (lógica de envio de e-mail) ...
                     if salon_email_destino:
                         email_service.send_confirmation_email_to_salon(
                             salon_email=salon_email_destino, salon_name=salon_name, 
