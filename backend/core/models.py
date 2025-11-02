@@ -21,6 +21,7 @@ class SalonPublicDetails(BaseModel):
     cor_gradiente_inicio: str = "#A78BFA"
     cor_gradiente_fim: str = "#F472B6"
     servicos: List[Service] = []
+    mp_public_key: Optional[str] = None
 
 class ClientDetail(BaseModel): # Admin
     id: str
@@ -41,6 +42,7 @@ class ClientDetail(BaseModel): # Admin
     marketing_cota_total: Optional[int] = 100 # Importe a constante ou defina 100
     marketing_cota_usada: Optional[int] = 0
     marketing_cota_reset_em: Optional[datetime] = None
+    mp_public_key: Optional[str] = None
 
 class NewClientData(BaseModel): # Admin
     nome_salao: str
