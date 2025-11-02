@@ -548,6 +548,7 @@ async def mercadopago_auth_callback_handler(
     state: str,  # O salao_id que passamos
     code: str    # O código de autorização temporário
 ):
+    
     """
     Recebe o callback do MercadoPago, troca o 'code' pelo 'access_token'
     e salva as credenciais no documento do salão.
@@ -558,6 +559,8 @@ async def mercadopago_auth_callback_handler(
         raise HTTPException(status_code=500, detail="Credenciais da aplicação (Marketplace) não configuradas.")
 
     salao_id = state
+    if salao_id:
+        salao_id = salao_id.strip()
     frontend_error_url = f"https://horalis.app/painel/{salao_id}/configuracoes?mp_sync=error"
     
     # 1. Troca o código pelo Access Token
