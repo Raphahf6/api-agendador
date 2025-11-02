@@ -167,9 +167,10 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
             logging.error(f"Salão {salao_id} tentou pagamento, mas mp_access_token não está configurado.")
             raise HTTPException(status_code=403, detail="O pagamento online não está configurado para este salão.")
 
-        # Cria a instância do MercadoPago com o TOKEN DO SALÃO
+        # Instanciação Corrigida do Mercado Pago
         mp_client_do_salao = mercadopago.SDK(salon_access_token)
         mp_client_do_salao_payment = mp_client_do_salao.payment()
+        # -----------------------------------------------
 
         service_info = salon_data.get("servicos_data", {}).get(service_id)
         if not service_info:
@@ -179,7 +180,7 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
         service_name = service_info.get('nome_servico')
         salon_name = salon_data.get('nome_salao')
         salon_email_destino = salon_data.get('calendar_id') 
-        service_price = service_info.get('preco') # Correção do erro anterior
+        service_price = service_info.get('preco')
         
         # BUSCA VALOR DO SINAL DO DB (SEGURANÇA)
         sinal_valor_backend = salon_data.get('sinal_valor', 0.0)
@@ -197,7 +198,6 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
             ignore_firestore_id=None, ignore_google_event_id=None
         )
         if not is_free:
-            agendamento_ref = None # Garante que não deletaremos nada em caso de conflito
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Este horário não está mais disponível. Por favor, escolha outro.")
 
         # --- 3. Checagem/Criação de Cliente (CRM) ---
@@ -206,8 +206,7 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
         # --- 4. LÓGICA DE SALVAMENTO (PENDENTE) ---
         end_time_dt = start_time_dt + timedelta(minutes=duration)
         agendamento_data = {
-            "salaoId": salao_id, "serviceId": service_id,
-            "serviceName": service_name, "salonName": salon_name,
+            "salaoId": salao_id, "serviceId": service_id, "serviceName": service_name, "salonName": salon_name,
             "customerName": payload.customer_name.strip(), "customerEmail": payload.customer_email.strip(), 
             "customerPhone": payload.customer_phone, "startTime": start_time_dt, 
             "endTime": end_time_dt, "durationMinutes": duration, "servicePrice": service_price,
@@ -215,6 +214,7 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
             "reminderSent": False, "clienteId": cliente_id 
         }
         
+        # O agendamento TEMPORÁRIO é criado aqui
         agendamento_ref = db.collection('cabeleireiros').document(salao_id).collection('agendamentos').document()
         agendamento_ref.set(agendamento_data)
         logging.info(f"Agendamento 'pending_payment' salvo no Firestore com ID: {agendamento_ref.id}")
@@ -258,24 +258,37 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
                 "additional_info": additional_info,
                 "statement_descriptor": statement_descriptor
             }
-            # <<< CHAVE: Usa a instância do salão >>>
+            # Utiliza a instância .payment()
             payment_response = mp_client_do_salao_payment.create(payment_data, request_options=ro_obj)
             
             if payment_response["status"] not in [200, 201]:
+                # Se a chamada ao MP falhar, deleta e levanta a exceção.
+                if agendamento_ref: agendamento_ref.delete()
                 raise Exception(f"Erro MP (PIX): {payment_response.get('response').get('message', 'Erro desconhecido')}")
 
             payment_result = payment_response["response"]
-            qr_code_data = payment_result.get("point_of_interaction", {}).get("transaction_data", {})
-            agendamento_ref.update({"mercadopagoPaymentId": payment_result.get("id")})
-            
-            return {
-                "status": "pending_pix", "message": "PIX gerado. Aguardando pagamento.",
-                "payment_data": {
-                    "qr_code": qr_code_data.get("qr_code"), "qr_code_base64": qr_code_data.get("qr_code_base64"),
-                    "payment_id": payment_result.get("id"), "agendamento_id_ref": agendamento_ref.id 
+            payment_status = payment_result.get("status")
+
+            # <<< CORREÇÃO PIX: O PIX NUNCA VEM APROVADO, MAS PODE VIR 'PENDING'. NÃO DELETA O AGENDAMENTO, MAS DEVOLVE SUCESSO. >>>
+            # A lógica é manter o agendamento em pending_payment para aguardar o webhook.
+            if payment_status in ["pending", "in_process"]:
+                qr_code_data = payment_result.get("point_of_interaction", {}).get("transaction_data", {})
+                agendamento_ref.update({"mercadopagoPaymentId": payment_result.get("id")})
+                
+                return {
+                    "status": "pending_pix", "message": "PIX gerado. Agendamento reservado e aguardando pagamento.",
+                    "payment_data": {
+                        "qr_code": qr_code_data.get("qr_code"), "qr_code_base64": qr_code_data.get("qr_code_base64"),
+                        "payment_id": payment_result.get("id"), "agendamento_id_ref": agendamento_ref.id 
+                    }
                 }
-            }
-        
+            else:
+                 # Se vier qualquer outro status (rejeitado), deleta.
+                logging.warning(f"PIX com status inesperado ({payment_status}). Deletando agendamento {agendamento_ref.id}.")
+                if agendamento_ref: agendamento_ref.delete()
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Falha ao gerar o PIX.")
+
+
         # --- CASO 2: PAGAMENTO COM CARTÃO ---
         else:
             payment_data = {
@@ -288,10 +301,11 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
                 "additional_info": additional_info,
                 "statement_descriptor": statement_descriptor
             }
-            # <<< CHAVE: Usa a instância do salão >>>
+            # Utiliza a instância .payment()
             payment_response = mp_client_do_salao_payment.create(payment_data, request_options=ro_obj)
 
             if payment_response["status"] not in [200, 201]:
+                if agendamento_ref: agendamento_ref.delete()
                 error_msg = payment_response.get('response', {}).get('message', 'Erro desconhecido ao processar o cartão.')
                 raise Exception(f"Erro MP (Cartão): {error_msg}")
 
@@ -312,11 +326,15 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
                 return {"status": "approved", "message": "Pagamento aprovado e agendamento confirmado!"}
             
             elif payment_status in ["in_process", "pending", "pending_review_manual"]:
-                logging.info(f"Sinal (Cartão) PENDENTE ou EM REVISÃO ({payment_status}). Agendamento {agendamento_ref.id} aguardando webhook.")
-                agendamento_ref.update({"status": "pending_payment", "mercadopagoPaymentId": payment_response["response"].get("id")})
-                return {"status": "pending_review", "message": "Seu pagamento está em análise pelo MercadoPago. Você receberá a confirmação por e-mail."}
+                logging.warning(f"Sinal (Cartão) PENDENTE ou EM REVISÃO ({payment_status}). Deletando agendamento {agendamento_ref.id}.")
+                
+                if agendamento_ref: agendamento_ref.delete()
+
+                error_detail = "Seu pagamento está em análise ou pendente. Por favor, tente novamente com outro método ou mais tarde."
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error_detail)
             
             else:
+                 # Rejeitado ou outro status não esperado
                 error_detail = payment_response["response"].get("status_detail", "Pagamento rejeitado.")
                 if agendamento_ref: agendamento_ref.delete()
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error_detail)
@@ -330,7 +348,7 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
             try: agendamento_ref.delete()
             except Exception: pass
         raise HTTPException(status_code=500, detail=str(e))
-
+    
 @router.post("/agendamentos", status_code=status.HTTP_201_CREATED)
 async def create_appointment(appointment: Appointment):
     """
