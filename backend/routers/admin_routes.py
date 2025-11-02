@@ -1379,3 +1379,35 @@ async def send_mass_marketing_email(
         "status": "Processamento Aceito",
         "message": f"Disparo de e-mail iniciado em segundo plano para {salon_name}."
     }
+    
+@auth_router.get("/check-agendamento-status/{salao_id}/{agendamento_id}", response_model=dict[str, str])
+async def check_agendamento_status(salao_id: str, agendamento_id: str):
+    """
+    Endpoint PÚBLICO de polling para verificar o status de um agendamento específico (PIX/Boleto).
+    """
+    logging.info(f"Polling recebido para verificar Agendamento ID: {agendamento_id} no Salão {salao_id}")
+    
+    try:
+        agendamento_ref = db.collection('cabeleireiros').document(salao_id).collection('agendamentos').document(agendamento_id)
+        agendamento_doc = agendamento_ref.get()
+
+        if not agendamento_doc.exists:
+            return {"status": "not_found", "message": "Agendamento não encontrado."}
+        
+        current_status = agendamento_doc.get('status')
+
+        if current_status == 'confirmado':
+            # O webhook já passou e confirmou!
+            return {"status": "approved", "message": "Pagamento confirmado."}
+        
+        elif current_status == 'pending_payment':
+            # Ainda pendente (PIX ainda não foi pago)
+            return {"status": "pending_payment", "message": "Aguardando confirmação do PIX."}
+        
+        else:
+            # Rejeitado, cancelado, etc.
+            return {"status": current_status, "message": "Pagamento não aprovado."}
+
+    except Exception as e:
+        logging.exception(f"Erro no Polling de Agendamento para {agendamento_id}: {e}")
+        return {"status": "error", "message": "Erro de comunicação."}

@@ -268,7 +268,8 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
                 "payment_data": {
                     "qr_code": qr_code_data.get("qr_code"),
                     "qr_code_base64": qr_code_data.get("qr_code_base64"),
-                    "payment_id": payment_result.get("id")
+                    "payment_id": payment_result.get("id"),
+                    "agendamento_id_ref": agendamento_ref.id # <<< ADICIONA O ID DO AGENDAMENTO
                 }
             }
         
