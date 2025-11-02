@@ -4,22 +4,23 @@ import re
 from fastapi import APIRouter, HTTPException, Query, status, Depends
 from datetime import datetime, timedelta 
 from firebase_admin import firestore 
-from typing import Optional, Dict
+from google.cloud.firestore import FieldFilter
+from typing import Optional, Dict, List
 
 # Importações dos seus módulos
 from core.models import SalonPublicDetails, Service, Appointment, Cliente
 from core.db import get_hairdresser_data_from_db, db 
-import calendar_service
-import email_service
+import backend.calendar_service as calendar_service
+import backend.email_service as email_service 
 
 # --- Constantes ---
-CLIENTE_COLLECTION = 'clientes'
+CLIENTE_COLLECTION = 'clientes' 
 
 router = APIRouter(
     tags=["Cliente Final"] 
 )
 
-# --- FUNÇÃO UTILITY: Checa e Cria/Atualiza o Cliente CRM ---
+# --- Função Utility para o CRM ---
 def check_and_update_cliente_profile(
     salao_id: str, 
     appointment_data: Appointment
@@ -33,16 +34,15 @@ def check_and_update_cliente_profile(
     cliente_email = appointment_data.customer_email.strip()
     cliente_whatsapp = appointment_data.customer_phone
     
-    # Busca na subcoleção 'clientes' dentro do documento do salão
     clientes_subcollection = db.collection('cabeleireiros').document(salao_id).collection('clientes')
 
     # 1. Busca pelo E-mail (Prioridade)
-    query_email = clientes_subcollection.where("email", "==", cliente_email).limit(1).stream()
+    query_email = clientes_subcollection.where(filter=FieldFilter("email", "==", cliente_email)).limit(1).stream()
     cliente_doc = next(query_email, None)
 
     # 2. Se não achou por email, busca por WhatsApp
     if not cliente_doc:
-        query_whatsapp = clientes_subcollection.where("whatsapp", "==", cliente_whatsapp).limit(1).stream()
+        query_whatsapp = clientes_subcollection.where(filter=FieldFilter("whatsapp", "==", cliente_whatsapp)).limit(1).stream()
         cliente_doc = next(query_whatsapp, None)
 
     
@@ -143,7 +143,7 @@ async def create_appointment(appointment: Appointment):
     logging.info(f"Cliente '{user_name}' ({user_email}) criando agendamento para {salao_id}")
     
     try:
-        # --- 0. Checagem de Cliente (NOVA LÓGICA CRM) ---
+        # --- 0. Checagem de Cliente (CRM) ---
         cliente_id = check_and_update_cliente_profile(salao_id, appointment)
         logging.info(f"Agendamento associado ao cliente_id: {cliente_id or 'N/A'}")
         
@@ -184,23 +184,25 @@ async def create_appointment(appointment: Appointment):
             "status": "confirmado", 
             "createdAt": firestore.SERVER_TIMESTAMP,
             "reminderSent": False,
-            "clienteId": cliente_id # NOVO CAMPO: Liga ao perfil CRM
+            "clienteId": cliente_id # Linka ao perfil CRM
         }
         agendamento_ref = db.collection('cabeleireiros').document(salao_id).collection('agendamentos').document()
         agendamento_ref.set(agendamento_data)
         logging.info(f"Agendamento salvo no Firestore com ID: {agendamento_ref.id}")
 
-        # 4. Disparo do E-MAIL (SALÃO e CLIENTE)
+        # 4. DISPARO DO E-MAIL (SALÃO e CLIENTE)
         try:
             email_service.send_confirmation_email_to_salon(
                 salon_email=salon_email_destino, salon_name=salon_name, 
                 customer_name=user_name, client_phone=user_phone, 
                 service_name=service_name, start_time_iso=start_time_str
             )
+            # <<< CORREÇÃO AQUI: Passando o salao_id >>>
             email_service.send_confirmation_email_to_customer(
                 customer_email=user_email, customer_name=user_name,
                 service_name=service_name, start_time_iso=start_time_str,
-                salon_name=salon_name
+                salon_name=salon_name,
+                salao_id=salao_id # Passa o ID para o link "Agendar Novamente"
             )
         except Exception as e:
             logging.error(f"Erro CRÍTICO ao disparar e-mail: {e}")

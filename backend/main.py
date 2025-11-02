@@ -15,8 +15,8 @@ load_dotenv()
 from routers import public_routes, admin_routes 
 
 # (Serviços que são importados pelos routers)
-import calendar_service
-import email_service
+import backend.calendar_service as calendar_service
+import backend.email_service as email_service
 
 # Configuração do logging
 logging.basicConfig(level=logging.INFO)

@@ -5,6 +5,7 @@ import resend
 from datetime import datetime
 from dotenv import load_dotenv
 
+# Importa o 'ZoneInfo'
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
@@ -23,14 +24,15 @@ try:
 except Exception:
     TARGET_TZ = None
 
-# --- CONSTANTE DO E-MAIL DE ENVIO ---
 # Este é o e-mail REAL verificado no Resend. NÃO MUDE ISSO.
-SENDER_EMAIL_ADDRESS = "Horalis-Agendamentos@horalis.app"
+SENDER_EMAIL_ADDRESS = "Agendamentos-Horalis@horalis.app"
+# URL Base do Frontend (para o link de agendamento)
+FRONTEND_BASE_URL = "https://horalis.app" 
 
 
 # --- Função HELPER INTERNA para formatar a hora ---
 def _format_time_to_brt(start_time_iso: str) -> str:
-    """Helper para converter ISO string para 'dd/MM/YYYY às HH:mm' (BRT)."""
+    # ... (código idêntico) ...
     if not TARGET_TZ:
         return start_time_iso 
     try:
@@ -44,6 +46,7 @@ def _format_time_to_brt(start_time_iso: str) -> str:
 # --- Função HELPER INTERNA para o CSS Base ---
 def _get_base_css() -> str:
     """Retorna o CSS base para os e-mails dos clientes."""
+    # <<< MUDANÇA: Adicionado estilo para .button >>>
     return """
         body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f4f4f4; color: #333; margin: 0; padding: 0; }
         .container { max-width: 600px; margin: 20px auto; background-color: #ffffff; padding: 30px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
@@ -51,7 +54,34 @@ def _get_base_css() -> str:
         p { line-height: 1.6; margin-bottom: 15px; }
         .detail { background-color: #f9f6ff; padding: 10px; border-radius: 4px; border-left: 5px solid #a78bfa; }
         .footer { text-align: center; margin-top: 20px; font-size: 12px; color: #888; }
+        .button {
+            display: inline-block;
+            background-color: #0E7490; /* Seu Ciano 800 */
+            color: #ffffff;
+            padding: 12px 24px;
+            margin-top: 15px;
+            text-decoration: none;
+            border-radius: 6px;
+            font-weight: bold;
+        }
     """
+
+# --- <<< NOVO: Função HELPER INTERNA para o Rodapé com Link >>> ---
+def _get_footer_with_link(salao_id: str) -> str:
+    """Gera o HTML do rodapé com o link público de agendamento."""
+    public_url = f"{FRONTEND_BASE_URL}/agendar/{salao_id}"
+    
+    return f"""
+        <div style="text-align: center; margin-top: 25px; padding-top: 20px; border-top: 1px solid #eee;">
+            <a href="{public_url}" class="button" style="color: #ffffff;">
+                Agendar Novo Horário
+            </a>
+        </div>
+        <div class="footer">
+            Este e-mail foi enviado automaticamente pelo sistema Horalis.
+        </div>
+    """
+# --- <<< FIM DA FUNÇÃO HELPER >>> ---
     
     
 # --- FUNÇÃO 1: E-mail para o SALÃO ---
@@ -62,13 +92,11 @@ def send_confirmation_email_to_salon(
     client_phone: str,
     service_name: str, 
     start_time_iso: str
+    # (Não precisa de salao_id, pois é um e-mail interno)
 ) -> bool:
     
     formatted_time = _format_time_to_brt(start_time_iso)
     subject = f"✅ NOVO AGENDAMENTO para {salon_name}: {service_name} às {formatted_time}"
-    
-    # <<< CORREÇÃO AQUI >>>
-    # O remetente para o *próprio salão* pode ser genérico
     from_address = f"Horalis Agendamentos <{SENDER_EMAIL_ADDRESS}>"
     
     html_content = f"""
@@ -78,12 +106,7 @@ def send_confirmation_email_to_salon(
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
-            body {{ font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f4f4f4; color: #333; margin: 0; padding: 0; }}
-            .container {{ max-width: 600px; margin: 20px auto; background-color: #ffffff; padding: 30px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }}
-            h1 {{ color: #7c3aed; font-size: 24px; border-bottom: 2px solid #eee; padding-bottom: 10px; }}
-            p {{ line-height: 1.6; margin-bottom: 15px; }}
-            .detail {{ background-color: #f9f6ff; padding: 10px; border-radius: 4px; border-left: 5px solid #a78bfa; }}
-            .footer {{ text-align: center; margin-top: 20px; font-size: 12px; color: #888; }}
+            {_get_base_css()}
         </style>
     </head>
     <body>
@@ -115,7 +138,7 @@ def send_confirmation_email_to_salon(
             "subject": subject,
             "html": html_content,
         })
-        logging.info(f"E-mail de confirmação (para SALÃO) enviado com sucesso para {salon_email}. ID: {result.get('id')}")
+        logging.info(f"E-mail de confirmação (para SALÃO) enviado com sucesso para {salon_email}.")
         return True
         
     except Exception as e:
@@ -129,13 +152,12 @@ def send_confirmation_email_to_customer(
     customer_name: str,
     service_name: str,
     start_time_iso: str,
-    salon_name: str
+    salon_name: str,
+    salao_id: str # <<< NOVO PARÂMETRO
 ) -> bool:
     
     formatted_time = _format_time_to_brt(start_time_iso)
     subject = f"Agendamento Confirmado! ✅ {service_name} em {salon_name}"
-
-    # <<< CORREÇÃO AQUI: Define o "From" dinâmico >>>
     from_address = f"{salon_name} <{SENDER_EMAIL_ADDRESS}>"
 
     html_content = f"""
@@ -160,9 +182,8 @@ def send_confirmation_email_to_customer(
             </div>
             
             <p style="margin-top: 20px;">Caso precise cancelar ou reagendar, por favor, entre em contato diretamente com o estabelecimento.</p>
-        </div>
-        <div class="footer">
-            Este e-mail foi enviado automaticamente pelo sistema Horalis.
+            
+            {_get_footer_with_link(salao_id)}
         </div>
     </body>
     </html>
@@ -170,7 +191,7 @@ def send_confirmation_email_to_customer(
     
     try:
         result = resend.Emails.send({
-            "from": from_address, # <-- USA O NOME DO SALÃO
+            "from": from_address,
             "to": [customer_email],
             "subject": subject,
             "html": html_content,
@@ -187,13 +208,12 @@ def send_cancellation_email_to_customer(
     customer_name: str,
     service_name: str,
     start_time_iso: str, 
-    salon_name: str
+    salon_name: str,
+    salao_id: str # <<< NOVO PARÂMETRO
 ) -> bool:
     
     formatted_time = _format_time_to_brt(start_time_iso)
     subject = f"Agendamento Cancelado ❌ {service_name} em {salon_name}"
-    
-    # <<< CORREÇÃO AQUI: Define o "From" dinâmico >>>
     from_address = f"{salon_name} <{SENDER_EMAIL_ADDRESS}>"
 
     html_content = f"""
@@ -220,9 +240,8 @@ def send_cancellation_email_to_customer(
             </div>
             
             <p style="margin-top: 20px;">Por favor, entre em contato com o estabelecimento para mais detalhes ou para tentar um novo horário.</p>
-        </div>
-        <div class="footer">
-            Este e-mail foi enviado automaticamente pelo sistema Horalis.
+            
+            {_get_footer_with_link(salao_id)}
         </div>
     </body>
     </html>
@@ -230,7 +249,7 @@ def send_cancellation_email_to_customer(
     
     try:
         result = resend.Emails.send({
-            "from": from_address, # <-- USA O NOME DO SALÃO
+            "from": from_address,
             "to": [customer_email],
             "subject": subject,
             "html": html_content,
@@ -248,14 +267,13 @@ def send_reschedule_email_to_customer(
     service_name: str,
     salon_name: str,
     old_start_time_iso: str,
-    new_start_time_iso: str
+    new_start_time_iso: str,
+    salao_id: str # <<< NOVO PARÂMETRO
 ) -> bool:
     
     old_formatted_time = _format_time_to_brt(old_start_time_iso)
     new_formatted_time = _format_time_to_brt(new_start_time_iso)
     subject = f"Agendamento Reagendado 🗓️ {service_name} em {salon_name}"
-
-    # <<< CORREÇÃO AQUI: Define o "From" dinâmico >>>
     from_address = f"{salon_name} <{SENDER_EMAIL_ADDRESS}>"
 
     html_content = f"""
@@ -289,9 +307,8 @@ def send_reschedule_email_to_customer(
             </div>
             
             <p style="margin-top: 20px;">Caso esta nova data não seja ideal, por favor, entre em contato diretamente com o estabelecimento.</p>
-        </div>
-        <div class="footer">
-            Este e-mail foi enviado automaticamente pelo sistema Horalis.
+            
+            {_get_footer_with_link(salao_id)}
         </div>
     </body>
     </html>
@@ -299,7 +316,7 @@ def send_reschedule_email_to_customer(
     
     try:
         result = resend.Emails.send({
-            "from": from_address, # <-- USA O NOME DO SALÃO
+            "from": from_address,
             "to": [customer_email],
             "subject": subject,
             "html": html_content,
@@ -316,13 +333,12 @@ def send_reminder_email_to_customer(
     customer_name: str,
     service_name: str,
     start_time_iso: str,
-    salon_name: str
+    salon_name: str,
+    salao_id: str # <<< NOVO PARÂMETRO
 ) -> bool:
     
     formatted_time = _format_time_to_brt(start_time_iso)
     subject = f"Lembrete de Agendamento ⏰ {service_name} hoje em {salon_name}"
-
-    # <<< CORREÇÃO AQUI: Define o "From" dinâmico >>>
     from_address = f"{salon_name} <{SENDER_EMAIL_ADDRESS}>"
 
     html_content = f"""
@@ -349,9 +365,8 @@ def send_reminder_email_to_customer(
             </div>
             
             <p style="margin-top: 20px;">Esperamos por você! Caso precise cancelar ou reagendar, por favor, entre em contato diretamente com o estabelecimento o quanto antes.</p>
-        </div>
-        <div class="footer">
-            Este e-mail foi enviado automaticamente pelo sistema Horalis.
+            
+            {_get_footer_with_link(salao_id)}
         </div>
     </body>
     </html>
@@ -359,7 +374,7 @@ def send_reminder_email_to_customer(
     
     try:
         result = resend.Emails.send({
-            "from": from_address, # <-- USA O NOME DO SALÃO
+            "from": from_address,
             "to": [customer_email],
             "subject": subject,
             "html": html_content,
@@ -376,15 +391,12 @@ def send_promotional_email_to_customer(
     customer_name: str,
     salon_name: str,
     custom_subject: str,
-    custom_message_html: str
+    custom_message_html: str,
+    salao_id: str # <<< NOVO PARÂMETRO
 ) -> bool:
     
     subject = f"{custom_subject} - Exclusivo {salon_name}"
-
-    # <<< CORREÇÃO AQUI: Define o "From" dinâmico >>>
-    # O remetente do e-mail promocional (marketing) deve ser do próprio salão
     from_address = f"{salon_name} <{SENDER_EMAIL_ADDRESS}>"
-    # Nota: O seu 'from' original era "Horalis <Horalis@...>", mudei para ser dinâmico.
 
     html_content = f"""
     <!DOCTYPE html>
@@ -409,9 +421,8 @@ def send_promotional_email_to_customer(
             </div>
             
             <p>Esperamos te ver em breve!</p>
-        </div>
-        <div class="footer">
-            Este e-mail foi enviado automaticamente pelo sistema Horalis.
+            
+            {_get_footer_with_link(salao_id)}
         </div>
     </body>
     </html>
@@ -419,7 +430,7 @@ def send_promotional_email_to_customer(
     
     try:
         result = resend.Emails.send({
-            "from": from_address, # <-- USA O NOME DO SALÃO
+            "from": from_address,
             "to": [customer_email],
             "subject": subject,
             "html": html_content,
