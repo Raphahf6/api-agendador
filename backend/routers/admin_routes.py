@@ -152,7 +152,6 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
         if uid: admin_auth.delete_user(uid)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Erro ao salvar dados do salão: {e}")
 
-    # --- Passo 4: Processar o Pagamento (COM HEADER CORRIGIDO) ---
     try:
         logging.info(f"Processando pagamento para {salao_id} via {payload.payment_method_id}...")
         notification_url = f"{RENDER_API_URL}/webhooks/mercado-pago"
@@ -162,13 +161,38 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
             "number": payload.payer.identification.number
         } if payload.payer.identification else None
 
-        # --- <<< CORREÇÃO CRÍTICA: Define o Objeto RequestOptions >>> ---
+        # --- <<< CORREÇÃO 1: Define o Objeto RequestOptions (Header) >>> ---
         ro_obj = RequestOptions(
             custom_headers={
                 "X-Meli-Session-Id": payload.device_id
             }
         )
-        # --- <<< FIM DA CORREÇÃO >>> ---
+        
+        # --- <<< CORREÇÃO 2: Define o additional_info (Contexto Anti-Fraude) >>> ---
+        nome_completo = payload.nome_salao.strip().split() # Usando nome do salão como nome
+        primeiro_nome = nome_completo[0]
+        ultimo_nome = nome_completo[-1] if len(nome_completo) > 1 else primeiro_nome
+
+        additional_info = {
+            "payer": {
+                "first_name": primeiro_nome,
+                "last_name": ultimo_nome,
+                "phone": {
+                    "area_code": payload.numero_whatsapp[3:5], # Pega DDD do +55(XX)
+                    "number": payload.numero_whatsapp[5:]
+                },
+            },
+            "items": [
+                {
+                    "id": "HoralisAssinatura",
+                    "title": "Horalis Pro (30 dias)",
+                    "description": "Assinatura Horalis",
+                    "quantity": 1,
+                    "unit_price": payload.transaction_amount,
+                    "category_id": "saas" 
+                }
+            ]
+        }
 
         # --- CASO 1: PAGAMENTO COM PIX ---
         if payload.payment_method_id == 'pix':
@@ -179,7 +203,7 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
                 "payer": { "email": payload.payer.email, "identification": payer_identification_data },
                 "external_reference": salao_id, 
                 "notification_url": notification_url, 
-                # additional_info removido
+                "additional_info": additional_info #
             }
             payment_response = mp_payment_client.create(payment_data, request_options=ro_obj)
             
@@ -218,7 +242,8 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
                 "payer": { "email": payload.payer.email, "identification": payer_identification_data },
                 "external_reference": salao_id, 
                 "notification_url": notification_url,
-                # additional_info removido
+                "additional_info": additional_info # Passa o contexto
+                
             }
             payment_response = mp_payment_client.create(payment_data, request_options=ro_obj)
 

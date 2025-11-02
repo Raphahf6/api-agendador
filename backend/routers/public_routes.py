@@ -230,12 +230,38 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
             "number": payload.payer.identification.number
         } if payload.payer.identification else None
 
-        # --- <<< CORREÇÃO CRÍTICA: Define o Objeto RequestOptions >>> ---
+        # --- <<< CORREÇÃO CRÍTICA 1: Define o Objeto RequestOptions (Header) >>> ---
         ro_obj = RequestOptions(
             custom_headers={
                 "X-Meli-Session-Id": payload.device_id
             }
         )
+        
+        # --- <<< CORREÇÃO CRÍTICA 2: Define o additional_info (Contexto Anti-Fraude) >>> ---
+        nome_completo = payload.customer_name.strip().split()
+        primeiro_nome = nome_completo[0]
+        ultimo_nome = nome_completo[-1] if len(nome_completo) > 1 else primeiro_nome
+
+        additional_info = {
+            "payer": {
+                "first_name": primeiro_nome,
+                "last_name": ultimo_nome,
+                "phone": {
+                    "area_code": payload.customer_phone[0:2], # Assume DDD
+                    "number": payload.customer_phone[2:]
+                },
+            },
+            "items": [
+                {
+                    "id": service_id,
+                    "title": service_name,
+                    "description": "Sinal de agendamento de serviço",
+                    "quantity": 1,
+                    "unit_price": payload.transaction_amount,
+                    "category_id": "services" # Categoria genérica
+                }
+            ]
+        }
         # --- <<< FIM DA CORREÇÃO >>> ---
 
         # --- CASO 1: PAGAMENTO COM PIX ---
@@ -247,8 +273,9 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
                 "payer": { "email": payload.payer.email, "identification": payer_identification_data },
                 "external_reference": external_reference, 
                 "notification_url": notification_url, 
-                # additional_info removido
+                "additional_info": additional_info # Passa o contexto
             }
+            # Passa o RequestOptions (Header)
             payment_response = mp_payment_client.create(payment_data, request_options=ro_obj)
             
             if payment_response["status"] not in [200, 201]:
@@ -256,7 +283,6 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
 
             payment_result = payment_response["response"]
             qr_code_data = payment_result.get("point_of_interaction", {}).get("transaction_data", {})
-            
             agendamento_ref.update({"mercadopagoPaymentId": payment_result.get("id")})
             
             return {
@@ -282,8 +308,9 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
                 "payer": { "email": payload.payer.email, "identification": payer_identification_data },
                 "external_reference": external_reference, 
                 "notification_url": notification_url,
-                # additional_info removido
+                "additional_info": additional_info # Passa o contexto
             }
+            # Passa o RequestOptions (Header)
             payment_response = mp_payment_client.create(payment_data, request_options=ro_obj)
 
             if payment_response["status"] not in [200, 201]:
@@ -331,7 +358,6 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
         if agendamento_ref:
             try: agendamento_ref.delete()
             except Exception: pass
-        # Retorna a mensagem de erro específica do MP (ou a genérica)
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/agendamentos", status_code=status.HTTP_201_CREATED)
