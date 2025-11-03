@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- NOSSOS MÓDULOS ---
-import backend.email_service as email_service
+import backend.services.email_service as email_service
 
 # --- CONFIGURAÇÃO ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')

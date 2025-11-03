@@ -1,5 +1,5 @@
 # backend/core/models.py
-from pydantic import BaseModel, Field, EmailStr 
+from pydantic import BaseModel, Field, EmailStr,field_validator
 from typing import List, Optional, Any, Dict
 from datetime import datetime
 from uuid import UUID 
@@ -16,10 +16,8 @@ class SalonPublicDetails(BaseModel):
     nome_salao: str
     tagline: Optional[str] = None
     url_logo: Optional[str] = None
-    cor_primaria: str = "#6366F1"
-    cor_secundaria: str = "#EC4899"
-    cor_gradiente_inicio: str = "#A78BFA"
-    cor_gradiente_fim: str = "#F472B6"
+    cor_primaria: str = "#9daa9d"
+    cor_secundaria: str = "#FFFFFF"
     servicos: List[Service] = []
     mp_public_key: Optional[str] = None
     sinal_valor: Optional[float] = 0.0
@@ -46,19 +44,35 @@ class ClientDetail(BaseModel): # Admin
     mp_public_key: Optional[str] = None
     sinal_valor: Optional[float] = 0.0
 
-class NewClientData(BaseModel): # Admin
+class NewClientData(BaseModel):
+    """Modelo para validação e criação de dados de um novo salão/cliente."""
+
     nome_salao: str
-    numero_whatsapp: str = Field(..., pattern=r"^\+55\d{10,11}$")
+    # O padrão (pattern) continua exigindo o '+' para garantir o formato de entrada correto
+    numero_whatsapp: str = Field(..., pattern=r"^\+55\d{10,11}$", description="Número de WhatsApp com DDI +55 e DDD (10 ou 11 dígitos no total).")
     calendar_id: str
     tagline: str = "Bem-vindo(a) ao seu Horalis!"
     dias_trabalho: List[str] = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday']
     horario_inicio: str = '09:00'
     horario_fim: str = '18:00'
     url_logo: Optional[str] = None
-    cor_primaria: str = "#6366F1" 
-    cor_secundaria: str = "#EC4899"
-    cor_gradiente_inicio: str = "#A78BFA"
-    cor_gradiente_fim: str = "#F472B6"
+    cor_primaria: str = "#9daa9d" 
+    cor_secundaria: str = "#FFFFFF"
+
+    # NOVO VALIDATOR: Executa após a validação do formato (pattern)
+    @field_validator('numero_whatsapp', mode='after')
+    @classmethod
+    def strip_plus_sign_for_storage(cls, value: str) -> str:
+        """Remove o sinal de '+' do número após a validação do formato ser concluída.
+        O valor salvo no modelo será '5511...'."""
+        
+        # Como o pattern garante que o '+' é o primeiro caractere, podemos removê-lo.
+        if value.startswith('+'):
+            return value[1:] # Retorna a string a partir do segundo caractere
+        
+        # Caso o pattern fosse mais flexível (o que não é o caso aqui), manteríamos o valor
+        return value
+    
 
 # --- Modelo de Agendamento Público (Existente) ---
 class Appointment(BaseModel):
