@@ -61,7 +61,7 @@ GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET")
 SCOPES = ['https://www.googleapis.com/auth/calendar']
 RENDER_API_URL = "https://api-agendador.onrender.com/api/v1" 
-GOOGLE_REDIRECT_URI = f"{RENDER_API_URL}/api/v1/admin/google/auth/callback"
+GOOGLE_REDIRECT_URI = f"{RENDER_API_URL}/admin/google/auth/callback"
 
 # --- Constantes do Mercado Pago OAuth ---
 MP_APP_ID = os.environ.get("MP_APP_ID")
