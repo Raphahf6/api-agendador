@@ -909,56 +909,54 @@ async def update_client(client_id: str, client_update_data: ClientDetail, curren
     
     try:
         client_ref = db.collection('cabeleireiros').document(client_id)
+        
+        # 1. Verificação de existência
         if not client_ref.get(retry=None, timeout=None).exists:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cliente não encontrado.")
         
-        # ----------------------------------------------------
-        # CONSTRUÇÃO DOS DADOS PARA O FIRESTORE
-        # ----------------------------------------------------
+        # 2. CONVERSÃO CRÍTICA: Converter o payload Pydantic COMPLETO para um dicionário puro.
+        #    Isso resolve o erro 'Cannot convert to a Firestore Value' para DailySchedule.
+        client_info_to_save = client_update_data.model_dump(
+            exclude={'servicos', 'id'}, # Exclui campos que não vão para o documento principal
+            exclude_unset=True,        # Exclui campos que não foram definidos no payload (evita sobrescrever com None)
+            mode='json'                # Garante que submodelos (DailySchedule) sejam serializados como dicts puros
+        )
         
-        # 1. Constrói o dicionário de atualização (exclui serviços e id)
-        client_info = client_update_data.dict(exclude={'servicos', 'id'}, exclude_unset=True)
         updated_services = client_update_data.servicos
         
-        # 2. SE o campo de agenda detalhada estiver presente, adiciona ao dicionário de atualização.
-        #    Isso garante que a nova estrutura seja salva.
-        if client_update_data.horario_trabalho_detalhado:
-            # O Pydantic garante que o formato está correto.
-            client_info['horario_trabalho_detalhado'] = client_update_data.horario_trabalho_detalhado
-            
-            # Opcional: Marcar campos antigos como DELETE, se você quiser limpar o documento
-            # client_info['dias_trabalho'] = firestore.DELETE_FIELD
-            # client_info['horario_inicio'] = firestore.DELETE_FIELD
-            # client_info['horario_fim'] = firestore.DELETE_FIELD
-
-
+        # 3. Lógica de Transação e Salvamento
         @firestore.transactional
         def update_in_transaction(transaction, client_ref, client_info_to_save, services_to_save):
             services_ref = client_ref.collection('servicos')
             old_services_refs = [doc.reference for doc in services_ref.stream(transaction=transaction)]
             
-            # O cliente_info agora contém o 'horario_trabalho_detalhado'
+            # Aqui usamos o dicionário client_info_to_save que é serializável pelo Firestore
             transaction.update(client_ref, client_info_to_save)
             
             # Lógica de Atualização de Serviços (mantida)
             for old_ref in old_services_refs: transaction.delete(old_ref)
             for service_data in services_to_save:
                 new_service_ref = services_ref.document()
-                service_dict = service_data.dict(exclude={'id'}, exclude_unset=True, exclude_none=True)
+                # O Service é um modelo Pydantic e também precisa ser convertido para set()
+                service_dict = service_data.model_dump(exclude={'id'}, exclude_unset=True, exclude_none=True)
                 transaction.set(new_service_ref, service_dict)
                 
         transaction = db.transaction()
-        update_in_transaction(transaction, client_ref, client_info, updated_services)
+        # Passa o dicionário PURAMENTE serializável
+        update_in_transaction(transaction, client_ref, client_info_to_save, updated_services)
         
         logging.info(f"Cliente '{client_update_data.nome_salao}' atualizado.")
         
-        # Retorna os detalhes atualizados (que agora incluem o novo campo)
+        # 4. Retorno
+        # Assumindo que get_client_details retorna um ClientDetail
         updated_details = await get_client_details(client_id, current_user)
         return updated_details
         
     except Exception as e:
+        # Se for um erro de validação Pydantic, ele é capturado antes de chegar aqui,
+        # mas mantemos o tratamento de erro genérico do Firestore.
         logging.exception(f"Erro CRÍTICO ao atualizar cliente {client_id}:")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno.")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno ao salvar dados.")
 
 # --- Agendamento Manual ---
 @router.post("/calendario/agendar", status_code=status.HTTP_201_CREATED)
