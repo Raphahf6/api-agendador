@@ -87,10 +87,347 @@ except Exception as e:
     sdk = None
     mp_preference_client = None
     mp_payment_client = None
+    
+    
+PIX_EXPIRATION_LIMIT = timedelta(minutes=30) 
+
+def is_pending_payment_expired(payment_id: str, mp_payment_client) -> bool:
+    """
+    Verifica se um PIX pendente expirou baseado no status do MP e no tempo de criação.
+    """
+    if not payment_id:
+        return True # Se não há ID de pagamento, está "expirado" para fins de re-registro.
+
+    try:
+        # 1. Tenta obter o status do pagamento no MP
+        payment_response = mp_payment_client.get(payment_id)
+        
+        if payment_response.get("status") in [200, 201]:
+            payment = payment_response.get("response")
+            
+            # Se o status já for final (approved, rejected, cancelled), ele não é mais 'pending'.
+            if payment.get("status") not in ["pending", "in_process"]:
+                return True
+            
+            # 2. Se o PIX ainda estiver 'pending', verificamos a data de criação
+            date_created_str = payment.get("date_created")
+            if date_created_str:
+                try:
+                    # Tenta converter a data
+                    date_created = datetime.fromisoformat(date_created_str).astimezone(pytz.utc)
+                    now = datetime.now(pytz.utc)
+                    
+                    # Compara
+                    if now - date_created > PIX_EXPIRATION_LIMIT:
+                        return True
+                        
+                except ValueError:
+                    # Se a formatação da data falhar, considera o PIX "estranho" e expirado
+                    logging.error(f"Data de criação do PIX {payment_id} inválida: {date_created_str}")
+                    return True # Considera expirado para não travar o usuário
+            else:
+                # Se date_created_str for None, considera-se expirado
+                logging.warning(f"PIX {payment_id} pendente sem data de criação. Forçando expiração.")
+                return True
+
+            return False # Pagamento ainda pendente e DENTRO do prazo de validade.
+                
+    except Exception as e:
+        # Se a API do MP falhar, assumimos que o pagamento está inacessível/expirado
+        logging.error(f"Erro ao verificar status MP para {payment_id}: {e}")
+        return True
+        
+    return False # Pagamento ainda pendente e DENTRO do prazo de validade.
 
 # --- ENDPOINT PÚBLICO DE CADASTRO PAGO DIRETO ---
 @auth_router.post("/criar-conta-paga", status_code=status.HTTP_201_CREATED)
 async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
+    
+    # ----------------------------------------------------
+    # CORREÇÃO 1: ID LIMPO para uso interno (Firestore e External Reference)
+    # ----------------------------------------------------
+    salao_id = payload.client_whatsapp_id
+    uid = None
+    
+    if not mp_payment_client:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Serviço de pagamento indisponível.")
+
+    # ----------------------------------------------------
+    # VERIFICAÇÃO DE E-MAIL
+    # ----------------------------------------------------
+    try:
+        admin_auth.get_user_by_email(payload.email)
+        # Se o e-mail existe, ele só deve ser permitido se o salão_id (whatsapp) for o mesmo
+        # e o status do PIX expirou (tratado na próxima seção).
+        pass  
+    except admin_auth.UserNotFoundError:
+        pass
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Erro ao verificar e-mail: {e}")
+
+    # ----------------------------------------------------
+    # CORREÇÃO 2: LÓGICA DE VERIFICAÇÃO E REEXIBIÇÃO DE PIX PENDENTE
+    # ----------------------------------------------------
+    try:
+        salao_doc = db.collection('cabeleireiros').document(salao_id).get()
+        
+        if salao_doc.exists:
+            status_atual = salao_doc.get("subscriptionStatus")
+            
+            # 1. BLOQUEIO PADRÃO: Conta ativa ou em teste.
+            if status_atual in ["active", "trialing"]:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Este número de WhatsApp já está ativo ou em teste."
+                )
+            
+            # 2. TRATAMENTO DE CONTA PENDENTE (PIX Assíncrono)
+            if status_atual == "pending":
+                last_payment_id = salao_doc.get("mercadopagoLastPaymentId")
+                
+                if is_pending_payment_expired(last_payment_id, mp_payment_client):
+                    # Caso A: PIX Expirado. Faz rollback forçado e libera para NOVO registro.
+                    logging.info(f"PIX expirado detectado para {salao_id}. Executando Rollback Forçado.")
+                    
+                    try:
+                        user = admin_auth.get_user_by_email(payload.email)
+                        admin_auth.delete_user(user.uid)
+                    except: pass 
+
+                    salao_doc.reference.delete()
+                    pass # Permite que o fluxo continue para criar nova conta
+                    
+                else:
+                    # Caso B: PIX Válido e Pendente. Retorna os dados do PIX existente.
+                    payment_response = mp_payment_client.get(last_payment_id)
+                    payment_result = payment_response.get("response", {})
+                    
+                    qr_code_data = payment_result.get("point_of_interaction", {}).get("transaction_data", {})
+                    qr_code_b64 = qr_code_data.get("qr_code_base64")
+                    qr_code_str = qr_code_data.get("qr_code")
+
+                    if qr_code_b64 and qr_code_str:
+                        return {
+                            "status": "pending_pix_existing", # Status para o frontend identificar
+                            "message": "Pagamento PIX pendente encontrado. Reexibindo QR Code.",
+                            "payment_data": {
+                                "qr_code": qr_code_str,
+                                "qr_code_base64": qr_code_b64,
+                                "payment_id": last_payment_id
+                            }
+                        }
+                    else:
+                        # Se não puder recuperar os dados, assume-se falha e faz rollback.
+                        logging.warning(f"Falha ao obter dados PIX existentes para {last_payment_id}. Forçando Rollback.")
+                        salao_doc.reference.delete()
+                        try:
+                            user = admin_auth.get_user_by_email(payload.email)
+                            admin_auth.delete_user(user.uid)
+                        except: pass
+                        pass # Permite novo registro
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Erro ao verificar dados: {e}")
+
+    # ----------------------------------------------------
+    # CRIAÇÃO DE USUÁRIO (SÓ CHEGA AQUI SE FOR NOVO OU EXPIROU/FOI DELETADO)
+    # ----------------------------------------------------
+    try:
+        new_user = admin_auth.create_user(
+            email=payload.email,
+            password=payload.password,
+            display_name=payload.nome_salao
+        )
+        uid = new_user.uid
+    except Exception as e:
+        # Se o email já existia, mas o doc do Firestore foi apagado, o Firebase Auth falhará aqui.
+        if "EMAIL_EXISTS" in str(e):
+             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Este e-mail já está cadastrado em outra conta. Tente fazer login ou use outro e-mail.")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Erro ao criar usuário: {e}")
+
+    salao_doc_ref = db.collection("cabeleireiros").document(salao_id)
+    
+    # ----------------------------------------------------
+    # CRIAÇÃO DO DOCUMENTO FIRESTORE
+    # ----------------------------------------------------
+    try:
+        now = datetime.now(pytz.utc)
+        salao_data = {
+            "nome_salao": payload.nome_salao,
+            "numero_whatsapp": payload.numero_whatsapp,
+            "email": payload.email,
+            "ownerUID": uid,
+            "createdAt": now,
+            "subscriptionStatus": "pending",
+            "paidUntil": None,
+            "subscriptionLastUpdated": now,
+            "trialEndsAt": None,
+            "mercadopago_customer_id": None,
+            "google_sync_enabled": False,
+            "marketing_cota_total": MARKETING_COTA_INICIAL,
+            "marketing_cota_usada": 0,
+            "marketing_cota_reset_em": None,
+        }
+        salao_doc_ref.set(salao_data)
+    except Exception as e:
+        logging.error(f"Erro ao criar salão no Firestore: {e}. Fazendo rollback do Auth...")
+        if uid: admin_auth.delete_user(uid)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Erro ao salvar dados do salão: {e}")
+
+    # ----------------------------------------------------
+    # CORREÇÃO 3: RequestOptions e Processamento MP
+    # ----------------------------------------------------
+    try:
+        notification_url = f"{RENDER_API_URL}/webhooks/mercado-pago"
+        
+        # DEFINIÇÃO CORRIGIDA do RequestOptions
+        ro_obj = RequestOptions(
+            custom_headers={
+                "X-Meli-Session-Id": payload.device_id
+            }
+        )
+
+        payer_identification_data = {
+            "type": payload.payer.identification.type,
+            "number": payload.payer.identification.number
+        } if payload.payer.identification else None
+
+        # ... (Restante da lógica de additional_info e statement_descriptor)
+        nome_completo = payload.nome_salao.strip().split()
+        primeiro_nome = nome_completo[0]
+        ultimo_nome = nome_completo[-1] if len(nome_completo) > 1 else primeiro_nome
+
+        additional_info = {
+            "payer": {
+                "first_name": primeiro_nome, "last_name": ultimo_nome,
+                "phone": {
+                    "area_code": payload.numero_whatsapp[3:5],  
+                    "number": payload.numero_whatsapp[5:]       
+                },
+            },
+            "items": [
+                {
+                    "id": "HoralisAssinatura", "title": "Horalis Pro (30 dias)",
+                    "description": "Assinatura Horalis", "quantity": 1, 
+                    "unit_price": payload.transaction_amount, "category_id": "saas" 
+                }
+            ]
+        }
+        statement_descriptor = "HORALISPRO"
+        
+        # ----------------------------------------------------
+        # LÓGICA PIX: Cria o NOVO PIX e retorna.
+        # ----------------------------------------------------
+        if payload.payment_method_id == 'pix':
+            payment_data = {
+                "transaction_amount": payload.transaction_amount,
+                "description": "Assinatura Horalis Pro (PIX)",
+                "payment_method_id": "pix",
+                "payer": { "email": payload.payer.email, "identification": payer_identification_data },
+                "external_reference": salao_id, 
+                "notification_url": notification_url, 
+                "additional_info": additional_info,
+                "statement_descriptor": statement_descriptor
+            }
+            payment_response = mp_payment_client.create(payment_data, request_options=ro_obj)
+            
+            if payment_response["status"] not in [200, 201]:
+                raise Exception(f"Erro MercadoPago (PIX): {payment_response.get('response').get('message', 'Erro desconhecido')}")
+
+            payment_result = payment_response["response"]
+            qr_code_data = payment_result.get("point_of_interaction", {}).get("transaction_data", {})
+            qr_code_b64 = qr_code_data.get("qr_code_base64")
+            qr_code_str = qr_code_data.get("qr_code")
+            
+            if not qr_code_b64 or not qr_code_str:
+                raise Exception("Falha ao gerar QR Code do PIX.")
+                
+            salao_doc_ref.update({"mercadopagoLastPaymentId": payment_result.get("id")})
+            
+            return {
+                "status": "pending_pix",
+                "message": "PIX gerado. Aguardando pagamento.",
+                "payment_data": {
+                    "qr_code": qr_code_str,
+                    "qr_code_base64": qr_code_b64,
+                    "payment_id": payment_result.get("id")
+                }
+            }
+        
+        # ----------------------------------------------------
+        # LÓGICA CARTÃO: Processa e retorna.
+        # ----------------------------------------------------
+        else: # Cartão
+            payment_data = {
+                "transaction_amount": payload.transaction_amount,
+                "token": payload.token,
+                "description": "Assinatura Horalis Pro (Cartão)",
+                "installments": payload.installments,
+                "payment_method_id": payload.payment_method_id,
+                "issuer_id": payload.issuer_id,
+                "payer": { "email": payload.payer.email, "identification": payer_identification_data },
+                "external_reference": salao_id, 
+                "notification_url": notification_url,
+                "additional_info": additional_info,
+                "statement_descriptor": statement_descriptor
+            }
+            payment_response = mp_payment_client.create(payment_data, request_options=ro_obj)
+
+            if payment_response["status"] not in [200, 201]:
+                error_msg = payment_response.get('response', {}).get('message', 'Erro desconhecido')
+                raise Exception(f"Erro MercadoPago (Cartão): {error_msg}")
+
+            payment_status = payment_response["response"].get("status")
+            
+            if payment_status == "approved":
+                new_paid_until = datetime.now(pytz.utc) + timedelta(days=30)
+                salao_doc_ref.update({
+                    "subscriptionStatus": "active",
+                    "paidUntil": new_paid_until,
+                    "subscriptionLastUpdated": firestore.SERVER_TIMESTAMP,
+                    "mercadopagoLastPaymentId": payment_response["response"].get("id"),
+                    "marketing_cota_total": MARKETING_COTA_INICIAL,
+                    "marketing_cota_usada": 0,
+                    "marketing_cota_reset_em": new_paid_until
+                })
+                
+                # ENVIO DO E-MAIL DE BOAS-VINDAS
+                try:
+                    email_service.send_welcome_email_to_salon(
+                        salon_email=payload.email, 
+                        salon_name=payload.nome_salao, 
+                        salao_id=salao_id,          
+                        login_email=payload.email    
+                    )
+                except Exception as email_err:
+                    logging.error(f"Falha ao enviar e-mail de boas-vindas: {email_err}")
+
+                return {"status": "approved", "message": "Pagamento aprovado e conta criada!"}
+            
+            elif payment_status in ["in_process", "pending", "pending_review_manual"]:
+                logging.info(f"Assinatura (Cartão) PENDENTE ou EM REVISÃO ({payment_status}). Salão {salao_id} aguardando webhook.")
+                salao_doc_ref.update({
+                    "mercadopagoLastPaymentId": payment_response["response"].get("id")
+                })
+                return {"status": "pending_review", "message": "Seu pagamento está em análise. Você será notificado por e-mail."}
+            
+            else:
+                error_detail = payment_response["response"].get("status_detail", "Pagamento rejeitado.")
+                if uid: admin_auth.delete_user(uid)
+                salao_doc_ref.delete()
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error_detail)
+
+    except Exception as e:
+        error_message = str(e)
+        logging.error(f"Erro ao processar pagamento: {error_message}. Fazendo rollback total...")
+        if uid:
+            try: admin_auth.delete_user(uid)
+            except Exception as auth_err: logging.error(f"Falha no rollback do Auth: {auth_err}")
+        try: db.collection("cabeleireiros").document(salao_id).delete()
+        except Exception as db_err: logging.error(f"Falha no rollback do Firestore: {db_err}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=error_message)
     
     # ----------------------------------------------------
     # >>> MODIFICAÇÃO CRÍTICA 1: Usar o ID LIMPO para o salão <<<
@@ -118,15 +455,46 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload):
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Erro ao verificar e-mail: {e}")
         
     # ----------------------------------------------------
-    # (Verificação de ID do Salão Existente - Usa o salao_id LIMPO)
+    # (Verificação de ID do Salão Existente - CORRIGIDA)
     # ----------------------------------------------------
     try:
         salao_doc = db.collection('cabeleireiros').document(salao_id).get()
         if salao_doc.exists:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Este número de WhatsApp já está cadastrado."
-            )
+            status_atual = salao_doc.get("subscriptionStatus")
+            
+            # BLOQUEIO PADRÃO: Se estiver ativo ou em teste, não pode re-registrar.
+            if status_atual in ["active", "trialing"]:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Este número de WhatsApp já está ativo ou em teste."
+                )
+            
+            # ** NOVO FLUXO: TRATAMENTO DE CONTA PENDENTE **
+            if status_atual == "pending":
+                last_payment_id = salao_doc.get("mercadopagoLastPaymentId")
+                
+                if is_pending_payment_expired(last_payment_id, mp_payment_client):
+                    # Se o pagamento expirou, fazemos o rollback forçado para LIBERAR o ID e o Email
+                    logging.info(f"PIX expirado detectado para {salao_id}. Executando Rollback Forçado.")
+                    
+                    # 1. Tenta deletar o usuário Auth (necessário para re-uso do email)
+                    try:
+                        user = admin_auth.get_user_by_email(payload.email)
+                        admin_auth.delete_user(user.uid)
+                    except admin_auth.UserNotFoundError:
+                        pass 
+                    except Exception as e:
+                        logging.error(f"Falha no rollback Auth durante re-registro: {e}")
+
+                    # 2. Deleta o documento do Firestore
+                    salao_doc.reference.delete()
+                    
+                    # Permite que o fluxo continue para CRIAR NOVA CONTA (o 'pass' original)
+                    pass 
+                
+            
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Erro ao verificar dados: {e}")
 
