@@ -35,6 +35,7 @@ sdk = mercadopago.SDK("TEST_ACCESS_TOKEN")
 
 # --- Constantes ---
 MARKETING_COTA_INICIAL = 100 
+SETUP_PRICE = float(os.environ.get("HORALIS_SETUP_PRICE"))
 
 # --- Configuração dos Roteadores ---
 router = APIRouter(
@@ -150,6 +151,7 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload,
     # ----------------------------------------------------
     salao_id = payload.client_whatsapp_id
     uid = None
+    
     
     if not mp_payment_client:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Serviço de pagamento indisponível.")
@@ -313,7 +315,7 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload,
                 {
                     "id": "HoralisAssinatura", "title": "Horalis Pro (30 dias)",
                     "description": "Assinatura Horalis", "quantity": 1, 
-                    "unit_price": payload.transaction_amount, "category_id": "saas" 
+                    "unit_price": SETUP_PRICE, "category_id": "saas" 
                 }
             ]
         }
@@ -324,7 +326,7 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload,
         # ----------------------------------------------------
         if payload.payment_method_id == 'pix':
             payment_data = {
-                "transaction_amount": payload.transaction_amount,
+                "transaction_amount": SETUP_PRICE,
                 "description": "Assinatura Horalis Pro (PIX)",
                 "payment_method_id": "pix",
                 "payer": { "email": payload.payer.email, "identification": payer_identification_data },
@@ -363,7 +365,7 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload,
         # ----------------------------------------------------
         else: # Cartão
             payment_data = {
-                "transaction_amount": payload.transaction_amount,
+                "transaction_amount": SETUP_PRICE,
                 "token": payload.token,
                 "description": "Assinatura Horalis Pro (Cartão)",
                 "installments": payload.installments,
@@ -459,7 +461,7 @@ async def create_subscription_checkout(
                 "description": "Acesso completo à plataforma Horalis por 30 dias.",
                 "quantity": 1,
                 "currency_id": "BRL",
-                "unit_price": 19.90
+                "unit_price": SETUP_PRICE
             }
         ],
         "payer": { "email": user_email },
