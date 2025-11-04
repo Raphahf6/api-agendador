@@ -155,6 +155,7 @@ class UserPaidSignupPayload(BaseModel):
     installments: Optional[int] = None
     payer: PayerData
     device_id: Optional[str] = None
+    client_whatsapp_id: str 
 
 class NotaManualBody(BaseModel):
     salao_id: str
