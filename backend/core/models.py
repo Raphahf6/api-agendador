@@ -25,12 +25,6 @@ class DailySchedule(BaseModel):
 
 # --- NOVO MODELO 2: Estrutura para os Dados de Serviço (Apenas para evitar erro no ClientDetail) ---
 # Se Service não estiver definido, você precisará defini-lo (usando o seu modelo real)
-class Service(BaseModel):
-    id: str
-    nome: str
-    duracao_minutos: int
-    valor: float
-    # Adicione todos os outros campos que o seu Service real possui.
 
 class SalonPublicDetails(BaseModel):
     nome_salao: str
