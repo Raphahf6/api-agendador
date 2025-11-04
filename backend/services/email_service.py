@@ -1,4 +1,3 @@
-# backend/email_service.py
 import os
 import logging
 import resend 
@@ -46,13 +45,13 @@ def _format_time_to_brt(start_time_iso: str) -> str:
 # --- Função HELPER INTERNA para o CSS Base ---
 def _get_base_css() -> str:
     """Retorna o CSS base para os e-mails dos clientes."""
-    # <<< MUDANÇA: Adicionado estilo para .button >>>
+    # <<< MUDANÇA: Estilo de botão ajustado para o Ciano Horalis >>>
     return """
         body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f4f4f4; color: #333; margin: 0; padding: 0; }
         .container { max-width: 600px; margin: 20px auto; background-color: #ffffff; padding: 30px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
-        h1 { color: #7c3aed; font-size: 24px; border-bottom: 2px solid #eee; padding-bottom: 10px; }
+        h1 { color: #0E7490; font-size: 24px; border-bottom: 2px solid #eee; padding-bottom: 10px; }
         p { line-height: 1.6; margin-bottom: 15px; }
-        .detail { background-color: #f9f6ff; padding: 10px; border-radius: 4px; border-left: 5px solid #a78bfa; }
+        .detail { background-color: #f0f8ff; padding: 10px; border-radius: 4px; border-left: 5px solid #0E7490; }
         .footer { text-align: center; margin-top: 20px; font-size: 12px; color: #888; }
         .button {
             display: inline-block;
@@ -66,7 +65,7 @@ def _get_base_css() -> str:
         }
     """
 
-# --- <<< NOVO: Função HELPER INTERNA para o Rodapé com Link >>> ---
+# --- Função HELPER INTERNA para o Rodapé com Link ---
 def _get_footer_with_link(salao_id: str) -> str:
     """Gera o HTML do rodapé com o link público de agendamento."""
     public_url = f"{FRONTEND_BASE_URL}/agendar/{salao_id}"
@@ -74,17 +73,97 @@ def _get_footer_with_link(salao_id: str) -> str:
     return f"""
         <div style="text-align: center; margin-top: 25px; padding-top: 20px; border-top: 1px solid #eee;">
             <a href="{public_url}" class="button" style="color: #ffffff;">
-                Agendar Novo Horário
+                Ver Minha Página de Agendamento
             </a>
         </div>
         <div class="footer">
-            Este e-mail foi enviado automaticamente pelo sistema Horalis.
+            Você pode acessar seu painel aqui: <a href="{FRONTEND_BASE_URL}/login" style="color: #0E7490;">{FRONTEND_BASE_URL}/login</a>
         </div>
     """
-# --- <<< FIM DA FUNÇÃO HELPER >>> ---
+# --- FIM DA FUNÇÃO HELPER ---
+
+
+# =========================================================================
+# === NOVO: FUNÇÃO 1: E-mail de Boas-Vindas e Confirmação de Cadastro ===
+# =========================================================================
+
+def send_welcome_email_to_salon(
+    salon_email: str, 
+    salon_name: str, 
+    salao_id: str,
+    login_email: str # Novo parâmetro para clareza
+) -> bool:
+    """Envia um e-mail de boas-vindas e confirmação de ativação da conta."""
     
+    subject = f"✨ Bem-vindo(a) à Horalis Pro, {salon_name}!"
+    from_address = f"Equipe Horalis <{SENDER_EMAIL_ADDRESS}>"
     
-# --- FUNÇÃO 1: E-mail para o SALÃO ---
+    html_content = f"""
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+            {_get_base_css()}
+            h1 {{ color: #06b6d4; }} /* Ciano mais claro */
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1 style="color: #06b6d4;">Parabéns, sua conta Pro está ativa!</h1>
+            <p>Olá, <strong>{salon_name}</strong>!</p>
+            <p>É um prazer tê-lo(a) a bordo. Seu pagamento de ativação foi confirmado, e agora você faz parte da comunidade Horalis Pro.</p>
+            
+            <p>Aqui estão os dados da sua conta e os próximos passos:</p>
+            
+            <div class="detail" style="background-color: #e0f7fa; border-left: 5px solid #06b6d4;">
+                <strong>Seu ID de Login (WhatsApp):</strong> {salao_id}<br>
+                <strong>Seu E-mail de Notificação:</strong> {login_email}<br>
+                <strong>Plano:</strong> Horalis Pro (Teste Ativo)
+            </div>
+            
+            <p style="margin-top: 20px; font-weight: bold;">
+                🎉 O primeiro passo é personalizar sua página de agendamento e sincronizar sua agenda!
+            </p>
+            
+            <div style="text-align: center; margin: 30px 0;">
+                <a href="{FRONTEND_BASE_URL}/login" class="button" style="background-color: #06b6d4; color: #ffffff;">
+                    Acessar Meu Painel Agora
+                </a>
+            </div>
+
+            <p style="text-align: center; font-size: 14px; color: #666; margin-top: 20px;">
+                Seu link público para clientes é: <a href="{FRONTEND_BASE_URL}/agendar/{salao_id}" style="color: #0E7490;">horalis.app/agendar/{salao_id}</a>
+            </p>
+
+            <div class="footer">
+                Este e-mail foi enviado automaticamente pelo sistema Horalis.
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+    
+    try:
+        result = resend.Emails.send({
+            "from": from_address, 
+            "to": [salon_email],
+            "subject": subject,
+            "html": html_content,
+        })
+        logging.info(f"E-mail de BOAS-VINDAS enviado com sucesso para {salon_email}.")
+        return True
+    except Exception as e:
+        logging.error(f"ERRO RESEND: Falha ao enviar e-mail de BOAS-VINDAS para {salon_email}: {e}")
+        return False
+
+# =========================================================================
+# === FIM DA NOVA FUNÇÃO / REUTILIZAÇÃO DAS EXISTENTES ABAIXO ===
+# =========================================================================
+
+
+# --- FUNÇÃO 2: E-mail para o SALÃO (Agendamento) ---
 def send_confirmation_email_to_salon(
     salon_email: str, 
     salon_name: str, 
@@ -92,7 +171,6 @@ def send_confirmation_email_to_salon(
     client_phone: str,
     service_name: str, 
     start_time_iso: str
-    # (Não precisa de salao_id, pois é um e-mail interno)
 ) -> bool:
     
     formatted_time = _format_time_to_brt(start_time_iso)
@@ -146,14 +224,14 @@ def send_confirmation_email_to_salon(
         return False
 
 
-# --- FUNÇÃO 2: E-mail de Confirmação para o CLIENTE ---
+# --- FUNÇÃO 3: E-mail de Confirmação para o CLIENTE ---
 def send_confirmation_email_to_customer(
     customer_email: str,
     customer_name: str,
     service_name: str,
     start_time_iso: str,
     salon_name: str,
-    salao_id: str # <<< NOVO PARÂMETRO
+    salao_id: str
 ) -> bool:
     
     formatted_time = _format_time_to_brt(start_time_iso)
@@ -202,14 +280,14 @@ def send_confirmation_email_to_customer(
         logging.error(f"ERRO RESEND: Falha ao enviar e-mail (para CLIENTE) {customer_email}: {e}")
         return False
 
-# --- FUNÇÃO 3: E-mail de Cancelamento para o CLIENTE ---
+# --- FUNÇÃO 4: E-mail de Cancelamento para o CLIENTE ---
 def send_cancellation_email_to_customer(
     customer_email: str,
     customer_name: str,
     service_name: str,
     start_time_iso: str, 
     salon_name: str,
-    salao_id: str # <<< NOVO PARÂMETRO
+    salao_id: str
 ) -> bool:
     
     formatted_time = _format_time_to_brt(start_time_iso)
@@ -260,7 +338,7 @@ def send_cancellation_email_to_customer(
         logging.error(f"ERRO RESEND: Falha ao enviar e-mail de CANCELAMENTO (para CLIENTE) {customer_email}: {e}")
         return False
 
-# --- FUNÇÃO 4: E-mail de Reagendamento para o CLIENTE ---
+# --- FUNÇÃO 5: E-mail de Reagendamento para o CLIENTE ---
 def send_reschedule_email_to_customer(
     customer_email: str,
     customer_name: str,
@@ -268,7 +346,7 @@ def send_reschedule_email_to_customer(
     salon_name: str,
     old_start_time_iso: str,
     new_start_time_iso: str,
-    salao_id: str # <<< NOVO PARÂMETRO
+    salao_id: str
 ) -> bool:
     
     old_formatted_time = _format_time_to_brt(old_start_time_iso)
@@ -327,14 +405,14 @@ def send_reschedule_email_to_customer(
         logging.error(f"ERRO RESEND: Falha ao enviar e-mail de REAGENDAMENTO (para CLIENTE) {customer_email}: {e}")
         return False
 
-# --- FUNÇÃO 5: E-mail de Lembrete para o CLIENTE ---
+# --- FUNÇÃO 6: E-mail de Lembrete para o CLIENTE ---
 def send_reminder_email_to_customer(
     customer_email: str,
     customer_name: str,
     service_name: str,
     start_time_iso: str,
     salon_name: str,
-    salao_id: str # <<< NOVO PARÂMETRO
+    salao_id: str
 ) -> bool:
     
     formatted_time = _format_time_to_brt(start_time_iso)
@@ -385,14 +463,14 @@ def send_reminder_email_to_customer(
         logging.error(f"ERRO RESEND: Falha ao enviar e-mail de LEMBRETE (para CLIENTE) {customer_email}: {e}")
         return False
         
-# --- FUNÇÃO 6: E-mail Promocional/Personalizado ---
+# --- FUNÇÃO 7: E-mail Promocional/Personalizado ---
 def send_promotional_email_to_customer(
     customer_email: str,
     customer_name: str,
     salon_name: str,
     custom_subject: str,
     custom_message_html: str,
-    salao_id: str # <<< NOVO PARÂMETRO
+    salao_id: str
 ) -> bool:
     
     subject = f"{custom_subject} - Exclusivo {salon_name}"
