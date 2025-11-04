@@ -11,6 +11,26 @@ class Service(BaseModel):
     duracao_minutos: int
     preco: Optional[float] = None
     descricao: Optional[str] = None
+    
+class DailySchedule(BaseModel):
+    # Campos principais de funcionamento
+    isOpen: bool = Field(..., description="Indica se o estabelecimento está aberto neste dia.")
+    openTime: str = Field(..., description="Horário de abertura (HH:MM).")
+    closeTime: str = Field(..., description="Horário de fechamento (HH:MM).")
+    
+    # Campos de Almoço/Intervalo
+    hasLunch: bool = Field(..., description="Indica se há intervalo de almoço.")
+    lunchStart: Optional[str] = Field(None, description="Início do almoço (HH:MM).")
+    lunchEnd: Optional[str] = Field(None, description="Fim do almoço (HH:MM).")
+
+# --- NOVO MODELO 2: Estrutura para os Dados de Serviço (Apenas para evitar erro no ClientDetail) ---
+# Se Service não estiver definido, você precisará defini-lo (usando o seu modelo real)
+class Service(BaseModel):
+    id: str
+    nome: str
+    duracao_minutos: int
+    valor: float
+    # Adicione todos os outros campos que o seu Service real possui.
 
 class SalonPublicDetails(BaseModel):
     nome_salao: str
@@ -43,6 +63,10 @@ class ClientDetail(BaseModel): # Admin
     marketing_cota_reset_em: Optional[datetime] = None
     mp_public_key: Optional[str] = None
     sinal_valor: Optional[float] = 0.0
+    horario_trabalho_detalhado: Optional[Dict[str, DailySchedule]] = Field(
+        None,
+        description="Estrutura detalhada de horários de funcionamento por dia, incluindo almoço."
+    )
 
 class NewClientData(BaseModel):
     """Modelo para validação e criação de dados de um novo salão/cliente."""
@@ -217,3 +241,5 @@ class PagamentoSettingsBody(BaseModel):
     # Mas vamos mantê-lo para a UX do admin, se ele quiser digitá-lo manualmente como fallback.
     mp_public_key: Optional[str] = None
     sinal_valor: Optional[float] = 0.0
+    
+    

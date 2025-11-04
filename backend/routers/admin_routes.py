@@ -904,28 +904,61 @@ async def create_client(client_data: NewClientData, current_user: dict = Depends
 
 @router.put("/clientes/{client_id}", response_model=ClientDetail)
 async def update_client(client_id: str, client_update_data: ClientDetail, current_user: dict = Depends(get_current_user)):
-    if client_id != client_update_data.id: raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="ID URL não corresponde aos dados.")
+    if client_id != client_update_data.id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="ID URL não corresponde aos dados.")
+    
     try:
         client_ref = db.collection('cabeleireiros').document(client_id)
-        if not client_ref.get(retry=None, timeout=None).exists: raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cliente não encontrado.")
+        if not client_ref.get(retry=None, timeout=None).exists:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cliente não encontrado.")
+        
+        # ----------------------------------------------------
+        # CONSTRUÇÃO DOS DADOS PARA O FIRESTORE
+        # ----------------------------------------------------
+        
+        # 1. Constrói o dicionário de atualização (exclui serviços e id)
         client_info = client_update_data.dict(exclude={'servicos', 'id'}, exclude_unset=True)
         updated_services = client_update_data.servicos
+        
+        # 2. SE o campo de agenda detalhada estiver presente, adiciona ao dicionário de atualização.
+        #    Isso garante que a nova estrutura seja salva.
+        if client_update_data.horario_trabalho_detalhado:
+            # O Pydantic garante que o formato está correto.
+            client_info['horario_trabalho_detalhado'] = client_update_data.horario_trabalho_detalhado
+            
+            # Opcional: Marcar campos antigos como DELETE, se você quiser limpar o documento
+            # client_info['dias_trabalho'] = firestore.DELETE_FIELD
+            # client_info['horario_inicio'] = firestore.DELETE_FIELD
+            # client_info['horario_fim'] = firestore.DELETE_FIELD
+
+
         @firestore.transactional
         def update_in_transaction(transaction, client_ref, client_info_to_save, services_to_save):
             services_ref = client_ref.collection('servicos')
             old_services_refs = [doc.reference for doc in services_ref.stream(transaction=transaction)]
+            
+            # O cliente_info agora contém o 'horario_trabalho_detalhado'
             transaction.update(client_ref, client_info_to_save)
+            
+            # Lógica de Atualização de Serviços (mantida)
             for old_ref in old_services_refs: transaction.delete(old_ref)
             for service_data in services_to_save:
                 new_service_ref = services_ref.document()
                 service_dict = service_data.dict(exclude={'id'}, exclude_unset=True, exclude_none=True)
                 transaction.set(new_service_ref, service_dict)
+                
         transaction = db.transaction()
         update_in_transaction(transaction, client_ref, client_info, updated_services)
+        
         logging.info(f"Cliente '{client_update_data.nome_salao}' atualizado.")
+        
+        # Retorna os detalhes atualizados (que agora incluem o novo campo)
         updated_details = await get_client_details(client_id, current_user)
         return updated_details
-    except Exception as e: logging.exception(f"Erro CRÍTICO ao atualizar cliente {client_id}:"); raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno.")
+        
+    except Exception as e:
+        logging.exception(f"Erro CRÍTICO ao atualizar cliente {client_id}:")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno.")
 
 # --- Agendamento Manual ---
 @router.post("/calendario/agendar", status_code=status.HTTP_201_CREATED)
