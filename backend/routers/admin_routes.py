@@ -141,36 +141,47 @@ def is_pending_payment_expired(payment_id: str, mp_payment_client) -> bool:
     return False # Pagamento ainda pendente e DENTRO do prazo de validade.
 
 # --- ENDPOINT PÚBLICO DE CADASTRO PAGO DIRETO ---
+DIAS_DA_SEMANA_KEYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
+
+# ESTRUTURA INICIAL COMPLETA (Para injeção no Firestore)
+INITIAL_SCHEDULE_DATA = {
+    day: {
+        'isOpen': day not in ['saturday', 'sunday'],
+        'openTime': '09:00',
+        'closeTime': '18:00',
+        'hasLunch': True,
+        'lunchStart': '12:00',
+        'lunchEnd': '13:00',
+    }
+    for day in DIAS_DA_SEMANA_KEYS
+}
+# ----------------------------------------------------
+
 @auth_router.post("/criar-conta-paga", status_code=status.HTTP_201_CREATED)
 async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload,
-                                          background_tasks: BackgroundTasks):
-   
+                                         background_tasks: BackgroundTasks):
     
-    # ----------------------------------------------------
-    # CORREÇÃO 1: ID LIMPO para uso interno (Firestore e External Reference)
-    # ----------------------------------------------------
+    # OBS: Usamos a variável SETUP_PRICE (do ENV) no bloco de pagamento
+    
     salao_id = payload.client_whatsapp_id
     uid = None
-    
     
     if not mp_payment_client:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Serviço de pagamento indisponível.")
 
     # ----------------------------------------------------
-    # VERIFICAÇÃO DE E-MAIL
+    # VERIFICAÇÃO DE E-MAIL (E VALIDAÇÃO DE CONFLITO DE ID)
     # ----------------------------------------------------
     try:
         admin_auth.get_user_by_email(payload.email)
-        # Se o e-mail existe, ele só deve ser permitido se o salão_id (whatsapp) for o mesmo
-        # e o status do PIX expirou (tratado na próxima seção).
-        pass  
+        pass  # Email existe
     except admin_auth.UserNotFoundError:
-        pass
+        pass # Email é novo
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Erro ao verificar e-mail: {e}")
 
     # ----------------------------------------------------
-    # CORREÇÃO 2: LÓGICA DE VERIFICAÇÃO E REEXIBIÇÃO DE PIX PENDENTE
+    # LÓGICA DE VERIFICAÇÃO E REEXIBIÇÃO DE PIX PENDENTE (Mantida)
     # ----------------------------------------------------
     try:
         salao_doc = db.collection('cabeleireiros').document(salao_id).get()
@@ -178,57 +189,36 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload,
         if salao_doc.exists:
             status_atual = salao_doc.get("subscriptionStatus")
             
-            # 1. BLOQUEIO PADRÃO: Conta ativa ou em teste.
             if status_atual in ["active", "trialing"]:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="Este número de WhatsApp já está ativo ou em teste."
-                )
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Este número de WhatsApp já está ativo ou em teste.")
             
-            # 2. TRATAMENTO DE CONTA PENDENTE (PIX Assíncrono)
             if status_atual == "pending":
                 last_payment_id = salao_doc.get("mercadopagoLastPaymentId")
                 
                 if is_pending_payment_expired(last_payment_id, mp_payment_client):
-                    # Caso A: PIX Expirado. Faz rollback forçado e libera para NOVO registro.
                     logging.info(f"PIX expirado detectado para {salao_id}. Executando Rollback Forçado.")
-                    
                     try:
                         user = admin_auth.get_user_by_email(payload.email)
                         admin_auth.delete_user(user.uid)
                     except: pass 
-
                     salao_doc.reference.delete()
-                    pass # Permite que o fluxo continue para criar nova conta
-                    
+                    pass
                 else:
-                    # Caso B: PIX Válido e Pendente. Retorna os dados do PIX existente.
                     payment_response = mp_payment_client.get(last_payment_id)
                     payment_result = payment_response.get("response", {})
-                    
                     qr_code_data = payment_result.get("point_of_interaction", {}).get("transaction_data", {})
-                    qr_code_b64 = qr_code_data.get("qr_code_base64")
-                    qr_code_str = qr_code_data.get("qr_code")
-
-                    if qr_code_b64 and qr_code_str:
-                        return {
-                            "status": "pending_pix_existing", # Status para o frontend identificar
-                            "message": "Pagamento PIX pendente encontrado. Reexibindo QR Code.",
-                            "payment_data": {
-                                "qr_code": qr_code_str,
-                                "qr_code_base64": qr_code_b64,
-                                "payment_id": last_payment_id
-                            }
-                        }
+                    if qr_code_data.get("qr_code_base64") and qr_code_data.get("qr_code"):
+                        return { "status": "pending_pix_existing", "message": "Pagamento PIX pendente encontrado. Reexibindo QR Code.",
+                                 "payment_data": { "qr_code": qr_code_data.get("qr_code"), "qr_code_base64": qr_code_data.get("qr_code_base64"),
+                                                   "payment_id": last_payment_id } }
                     else:
-                        # Se não puder recuperar os dados, assume-se falha e faz rollback.
                         logging.warning(f"Falha ao obter dados PIX existentes para {last_payment_id}. Forçando Rollback.")
                         salao_doc.reference.delete()
                         try:
                             user = admin_auth.get_user_by_email(payload.email)
                             admin_auth.delete_user(user.uid)
                         except: pass
-                        pass # Permite novo registro
+                        pass
             
     except HTTPException:
         raise
@@ -236,7 +226,7 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload,
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Erro ao verificar dados: {e}")
 
     # ----------------------------------------------------
-    # CRIAÇÃO DE USUÁRIO (SÓ CHEGA AQUI SE FOR NOVO OU EXPIROU/FOI DELETADO)
+    # CRIAÇÃO DE USUÁRIO (SÓ CHEGA AQUI SE FOR NOVO OU HOUVE ROLLBACK)
     # ----------------------------------------------------
     try:
         new_user = admin_auth.create_user(
@@ -246,7 +236,6 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload,
         )
         uid = new_user.uid
     except Exception as e:
-        # Se o email já existia, mas o doc do Firestore foi apagado, o Firebase Auth falhará aqui.
         if "EMAIL_EXISTS" in str(e):
              raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Este e-mail já está cadastrado em outra conta. Tente fazer login ou use outro e-mail.")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Erro ao criar usuário: {e}")
@@ -254,16 +243,30 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload,
     salao_doc_ref = db.collection("cabeleireiros").document(salao_id)
     
     # ----------------------------------------------------
-    # CRIAÇÃO DO DOCUMENTO FIRESTORE
+    # CRIAÇÃO DO DOCUMENTO FIRESTORE (INJETANDO DADOS PADRÃO DE HORÁRIO)
     # ----------------------------------------------------
     try:
         now = datetime.now(pytz.utc)
+        
+        # Leitura segura do preço (do ambiente)
+        SETUP_PRICE = float(os.environ.get("HORALIS_SETUP_PRICE", 0.99))
+        
         salao_data = {
             "nome_salao": payload.nome_salao,
             "numero_whatsapp": payload.numero_whatsapp,
             "email": payload.email,
             "ownerUID": uid,
             "createdAt": now,
+            
+            # >>> INCLUSÃO CRÍTICA DA AGENDA DETALHADA PADRÃO <<<
+            "horario_trabalho_detalhado": INITIAL_SCHEDULE_DATA,
+            
+            # Manter os campos antigos com valores padrão para compatibilidade de leitura do DB:
+            "dias_trabalho": ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
+            "horario_inicio": '09:00',
+            "horario_fim": '18:00',
+            
+            # Restante dos campos de subscrição
             "subscriptionStatus": "pending",
             "paidUntil": None,
             "subscriptionLastUpdated": now,
@@ -281,24 +284,19 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload,
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Erro ao salvar dados do salão: {e}")
 
     # ----------------------------------------------------
-    # CORREÇÃO 3: RequestOptions e Processamento MP
+    # PROCESSAMENTO MP
     # ----------------------------------------------------
     try:
         notification_url = f"{RENDER_API_URL}/webhooks/mercado-pago"
         
-        # DEFINIÇÃO CORRIGIDA do RequestOptions
-        ro_obj = RequestOptions(
-            custom_headers={
-                "X-Meli-Session-Id": payload.device_id
-            }
-        )
+        ro_obj = RequestOptions(custom_headers={"X-Meli-Session-Id": payload.device_id})
 
         payer_identification_data = {
             "type": payload.payer.identification.type,
             "number": payload.payer.identification.number
         } if payload.payer.identification else None
 
-        # ... (Restante da lógica de additional_info e statement_descriptor)
+        # Lógica de additional_info (mantida)
         nome_completo = payload.nome_salao.strip().split()
         primeiro_nome = nome_completo[0]
         ultimo_nome = nome_completo[-1] if len(nome_completo) > 1 else primeiro_nome
@@ -306,34 +304,24 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload,
         additional_info = {
             "payer": {
                 "first_name": primeiro_nome, "last_name": ultimo_nome,
-                "phone": {
-                    "area_code": payload.numero_whatsapp[3:5],  
-                    "number": payload.numero_whatsapp[5:]       
-                },
+                "phone": { "area_code": payload.numero_whatsapp[3:5], "number": payload.numero_whatsapp[5:] },
             },
-            "items": [
-                {
-                    "id": "HoralisAssinatura", "title": "Horalis Pro (30 dias)",
-                    "description": "Assinatura Horalis", "quantity": 1, 
-                    "unit_price": SETUP_PRICE, "category_id": "saas" 
-                }
-            ]
+            "items": [{
+                "id": "HoralisAssinatura", "title": "Horalis Pro (30 dias)",
+                "description": "Assinatura Horalis", "quantity": 1, 
+                "unit_price": SETUP_PRICE, "category_id": "saas" 
+            }]
         }
         statement_descriptor = "HORALISPRO"
         
-        # ----------------------------------------------------
-        # LÓGICA PIX: Cria o NOVO PIX e retorna.
-        # ----------------------------------------------------
+        # LÓGICA PIX
         if payload.payment_method_id == 'pix':
             payment_data = {
-                "transaction_amount": SETUP_PRICE,
-                "description": "Assinatura Horalis Pro (PIX)",
+                "transaction_amount": SETUP_PRICE, "description": "Assinatura Horalis Pro (PIX)",
                 "payment_method_id": "pix",
                 "payer": { "email": payload.payer.email, "identification": payer_identification_data },
-                "external_reference": salao_id, 
-                "notification_url": notification_url, 
-                "additional_info": additional_info,
-                "statement_descriptor": statement_descriptor
+                "external_reference": salao_id, "notification_url": notification_url, 
+                "additional_info": additional_info, "statement_descriptor": statement_descriptor
             }
             payment_response = mp_payment_client.create(payment_data, request_options=ro_obj)
             
@@ -342,40 +330,20 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload,
 
             payment_result = payment_response["response"]
             qr_code_data = payment_result.get("point_of_interaction", {}).get("transaction_data", {})
-            qr_code_b64 = qr_code_data.get("qr_code_base64")
-            qr_code_str = qr_code_data.get("qr_code")
-            
-            if not qr_code_b64 or not qr_code_str:
-                raise Exception("Falha ao gerar QR Code do PIX.")
-                
             salao_doc_ref.update({"mercadopagoLastPaymentId": payment_result.get("id")})
             
-            return {
-                "status": "pending_pix",
-                "message": "PIX gerado. Aguardando pagamento.",
-                "payment_data": {
-                    "qr_code": qr_code_str,
-                    "qr_code_base64": qr_code_b64,
-                    "payment_id": payment_result.get("id")
-                }
-            }
+            return { "status": "pending_pix", "message": "PIX gerado. Aguardando pagamento.",
+                     "payment_data": { "qr_code": qr_code_data.get("qr_code"), "qr_code_base64": qr_code_data.get("qr_code_base64"),
+                                       "payment_id": payment_result.get("id") } }
         
-        # ----------------------------------------------------
-        # LÓGICA CARTÃO: Processa e retorna.
-        # ----------------------------------------------------
-        else: # Cartão
+        # LÓGICA CARTÃO
+        else:
             payment_data = {
-                "transaction_amount": SETUP_PRICE,
-                "token": payload.token,
-                "description": "Assinatura Horalis Pro (Cartão)",
-                "installments": payload.installments,
-                "payment_method_id": payload.payment_method_id,
-                "issuer_id": payload.issuer_id,
+                "transaction_amount": SETUP_PRICE, "token": payload.token, "description": "Assinatura Horalis Pro (Cartão)",
+                "installments": payload.installments, "payment_method_id": payload.payment_method_id, "issuer_id": payload.issuer_id,
                 "payer": { "email": payload.payer.email, "identification": payer_identification_data },
-                "external_reference": salao_id, 
-                "notification_url": notification_url,
-                "additional_info": additional_info,
-                "statement_descriptor": statement_descriptor
+                "external_reference": salao_id, "notification_url": notification_url,
+                "additional_info": additional_info, "statement_descriptor": statement_descriptor
             }
             payment_response = mp_payment_client.create(payment_data, request_options=ro_obj)
 
@@ -388,31 +356,24 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload,
             if payment_status == "approved":
                 new_paid_until = datetime.now(pytz.utc) + timedelta(days=30)
                 salao_doc_ref.update({
-                    "subscriptionStatus": "active",
-                    "paidUntil": new_paid_until,
+                    "subscriptionStatus": "active", "paidUntil": new_paid_until,
                     "subscriptionLastUpdated": firestore.SERVER_TIMESTAMP,
                     "mercadopagoLastPaymentId": payment_response["response"].get("id"),
-                    "marketing_cota_total": MARKETING_COTA_INICIAL,
-                    "marketing_cota_usada": 0,
+                    "marketing_cota_total": MARKETING_COTA_INICIAL, "marketing_cota_usada": 0,
                     "marketing_cota_reset_em": new_paid_until
                 })
                 
-                # ENVIO DO E-MAIL DE BOAS-VINDAS
                 background_tasks.add_task(
-                email_service.send_welcome_email_to_salon,
-                salon_email=payload.email, 
-                salon_name=payload.nome_salao, 
-                salao_id=salao_id,          
-                login_email=payload.email    
-        )
+                    email_service.send_welcome_email_to_salon,
+                    salon_email=payload.email, salon_name=payload.nome_salao, 
+                    salao_id=salao_id, login_email=payload.email 
+                )
 
                 return {"status": "approved", "message": "Pagamento aprovado e conta criada!"}
             
             elif payment_status in ["in_process", "pending", "pending_review_manual"]:
                 logging.info(f"Assinatura (Cartão) PENDENTE ou EM REVISÃO ({payment_status}). Salão {salao_id} aguardando webhook.")
-                salao_doc_ref.update({
-                    "mercadopagoLastPaymentId": payment_response["response"].get("id")
-                })
+                salao_doc_ref.update({"mercadopagoLastPaymentId": payment_response["response"].get("id")})
                 return {"status": "pending_review", "message": "Seu pagamento está em análise. Você será notificado por e-mail."}
             
             else:
