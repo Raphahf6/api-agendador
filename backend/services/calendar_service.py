@@ -333,6 +333,7 @@ def is_slot_available(
 
         day_start_dt = local_tz.localize(datetime.combine(target_date_local, start_work_time))
         day_end_dt = local_tz.localize(datetime.combine(target_date_local, end_work_time))
+        logging.info(f"EXPEDIENTE CONFIGURADO: Início {day_start_dt.time()} | Fim {day_end_dt.time()}")
 
         if new_start_dt < day_start_dt or new_end_dt > day_end_dt:
             logging.warning(f"[Verificação de Conflito] Falha: Horário fora do expediente.")
