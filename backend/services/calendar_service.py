@@ -176,6 +176,9 @@ def find_available_slots(
         
         # --- BUSCANDO AGENDA DETALHADA DO DIA ALVO ---
         daily_config = salon_data.get('horario_trabalho_detalhado', {}).get(day_of_week_name)
+        
+        if daily_config and daily_config.get('hasLunch'):
+            logging.error(f"DEBUG ALMOÇO: {daily_config.get('lunchStart')} a {daily_config.get('lunchEnd')}")
 
         if not daily_config or not daily_config.get('isOpen'):
             logging.info(f"Dia de folga ou não configurado detectado para {date_str}.")
