@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Query, status, Depends
 from datetime import datetime, timedelta 
 from firebase_admin import firestore 
 from google.cloud.firestore import FieldFilter
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 import mercadopago 
 from mercadopago.config import RequestOptions
 
@@ -44,7 +44,62 @@ except Exception as e:
     mp_payment_client = None
 # --- FIM DA ADIÇÃO ---
 
+def is_conflict_with_lunch(
+    booking_start_dt: datetime, 
+    service_duration_minutes: int, 
+    salon_data: Dict[str, Any]
+) -> bool:
+    """
+    Verifica se um agendamento entra em conflito com o horário de almoço do salão.
+    
+    O 'booking_start_dt' já deve estar no fuso horário correto (geralmente UTC se for ISO 8601).
+    """
+    
+    # 1. Determina o dia da semana (ex: 'monday', 'tuesday').
+    # A agenda detalhada está em inglês no Python.
+    day_name = booking_start_dt.strftime('%A').lower() 
+    
+    # 2. Busca a agenda detalhada do salão.
+    daily_schedule: Optional[Dict[str, Any]] = salon_data.get('horario_trabalho_detalhado', {}).get(day_name)
 
+    if not daily_schedule:
+        # Se não houver agenda detalhada para o dia, a lógica do find_available_slots deve pegar isso,
+        # mas aqui assumimos que não há conflito de almoço se a agenda estiver ausente.
+        return False
+
+    # 3. Verifica a existência e necessidade de almoço
+    if not daily_schedule.get('hasLunch') or not daily_schedule.get('lunchStart') or not daily_schedule.get('lunchEnd'):
+        return False
+
+    lunch_start_str = daily_schedule['lunchStart'] # Ex: '12:00'
+    lunch_end_str = daily_schedule['lunchEnd']     # Ex: '13:00'
+    service_duration = timedelta(minutes=service_duration_minutes)
+    
+    # 4. Parsing dos horários de almoço para o dia da reserva
+    try:
+        # Pega a data da reserva
+        date_of_booking = booking_start_dt.date()
+        
+        # Converte as strings 'HH:MM' para objetos datetime completos no dia
+        lunch_start_time = datetime.strptime(lunch_start_str, '%H:%M').time()
+        lunch_end_time = datetime.strptime(lunch_end_str, '%H:%M').time()
+        
+        # Cria objetos datetime combinando a data da reserva com os horários de almoço
+        lunch_start_dt = datetime.combine(date_of_booking, lunch_start_time)
+        lunch_end_dt = datetime.combine(date_of_booking, lunch_end_time)
+        
+    except ValueError as e:
+        logging.error(f"Formato de horário de almoço inválido no DB: {e}")
+        return False
+        
+    # 5. Determina o fim do agendamento
+    booking_end_dt = booking_start_dt + service_duration
+
+    # 6. Lógica de detecção de sobreposição (Overlap)
+    # Conflito existe se: [Início da Reserva] < [Fim do Almoço] E [Fim da Reserva] > [Início do Almoço]
+    is_overlapping = (booking_start_dt < lunch_end_dt) and (booking_end_dt > lunch_start_dt)
+    
+    return is_overlapping
 # --- Função Utility para o CRM ---
 def check_and_update_cliente_profile(
     salao_id: str, 
@@ -167,7 +222,7 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
             logging.error(f"Salão {salao_id} tentou pagamento, mas mp_access_token não está configurado.")
             raise HTTPException(status_code=403, detail="O pagamento online não está configurado para este salão.")
 
-        # Instanciação Corrigida do Mercado Pago
+        # Instanciação Corrigida do Mercado Pago (Utilizando o token de acesso do Salão)
         mp_client_do_salao = mercadopago.SDK(salon_access_token)
         mp_client_do_salao_payment = mp_client_do_salao.payment()
         # -----------------------------------------------
@@ -199,6 +254,13 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
         )
         if not is_free:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Este horário não está mais disponível. Por favor, escolha outro.")
+            
+        # -------------------------------------------------------------------------
+        # >>> INCLUSÃO DA VALIDAÇÃO DE ALMOÇO <<<
+        # -------------------------------------------------------------------------
+        if is_conflict_with_lunch(start_time_dt, duration, salon_data):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="O horário de agendamento conflita com o horário de almoço do salão. Por favor, escolha outro slot.")
+        # -------------------------------------------------------------------------
 
         # --- 3. Checagem/Criação de Cliente (CRM) ---
         cliente_id = check_and_update_cliente_profile(salao_id, payload)
@@ -227,7 +289,7 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
             "type": payload.payer.identification.type, "number": payload.payer.identification.number
         } if payload.payer.identification else None
 
-        # CORREÇÃO CRÍTICA: Captura o device ID e configura o header para Antifraude
+        # Captura o device ID e configura o header para Antifraude
         device_id_value = getattr(payload, 'device_session_id', None)
         custom_headers = {}
         if device_id_value:
@@ -237,7 +299,6 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
             logging.warning("Device ID ausente no payload. Risco de fraude aumentado.")
 
         ro_obj = RequestOptions(custom_headers=custom_headers) # Usa o custom_headers
-        # FIM DA CORREÇÃO
 
         nome_completo = payload.customer_name.strip().split()
         primeiro_nome = nome_completo[0]; ultimo_nome = nome_completo[-1] if len(nome_completo) > 1 else primeiro_nome
@@ -269,7 +330,7 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
                 "statement_descriptor": statement_descriptor
             }
             # Utiliza a instância .payment()
-            payment_response = mp_client_do_salao_payment.create(payment_data, request_options=ro_obj) # ro_obj é usado aqui
+            payment_response = mp_client_do_salao_payment.create(payment_data, request_options=ro_obj)
             
             if payment_response["status"] not in [200, 201]:
                 # Se a chamada ao MP falhar, deleta e levanta a exceção.
@@ -311,7 +372,7 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
                 "statement_descriptor": statement_descriptor
             }
             # Utiliza a instância .payment()
-            payment_response = mp_client_do_salao_payment.create(payment_data, request_options=ro_obj) # ro_obj é usado aqui
+            payment_response = mp_client_do_salao_payment.create(payment_data, request_options=ro_obj)
 
             if payment_response["status"] not in [200, 201]:
                 if agendamento_ref: agendamento_ref.delete()
@@ -374,6 +435,8 @@ async def create_appointment(appointment: Appointment):
     
     logging.info(f"Cliente '{user_name}' ({user_email}) criando agendamento para {salao_id}")
     
+    agendamento_ref = None # Inicializa para o bloco try/except
+    
     try:
         # --- 0. Checagem de Cliente (CRM) ---
         cliente_id = check_and_update_cliente_profile(salao_id, appointment)
@@ -388,7 +451,6 @@ async def create_appointment(appointment: Appointment):
         duration = service_info.get('duracao_minutos')
         service_name = service_info.get('nome_servico')
         salon_name = salon_data.get('nome_salao')
-        service_price = service_info.get('preco')
         salon_email_destino = salon_data.get('calendar_id') 
         service_price = service_info.get('preco')
         if duration is None or service_name is None or not salon_email_destino:
@@ -399,8 +461,26 @@ async def create_appointment(appointment: Appointment):
         if not (10 <= len(cleaned_phone) <= 11):
             raise HTTPException(status_code=400, detail="Formato de telefone inválido.")
 
-        # 3. LÓGICA DE SALVAMENTO NO FIRESTORE
+        # 3. Lógica de Agendamento
         start_time_dt = datetime.fromisoformat(start_time_str)
+        
+        # --- 3.1: VERIFICAÇÃO DE HORÁRIO DISPONÍVEL ---
+        is_free = calendar_service.is_slot_available(
+            salao_id=salao_id, salon_data=salon_data,
+            new_start_dt=start_time_dt, duration_minutes=duration,
+            ignore_firestore_id=None, ignore_google_event_id=None
+        )
+        if not is_free:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Este horário não está mais disponível. Por favor, escolha outro.")
+
+        # -------------------------------------------------------------------------
+        # >>> INCLUSÃO DA VALIDAÇÃO DE ALMOÇO <<<
+        # -------------------------------------------------------------------------
+        if is_conflict_with_lunch(start_time_dt, duration, salon_data):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="O horário de agendamento conflita com o horário de almoço do salão. Por favor, escolha outro slot.")
+        # -------------------------------------------------------------------------
+
+        # 4. LÓGICA DE SALVAMENTO NO FIRESTORE
         end_time_dt = start_time_dt + timedelta(minutes=duration)
         agendamento_data = {
             "salaoId": salao_id,
@@ -423,24 +503,24 @@ async def create_appointment(appointment: Appointment):
         agendamento_ref.set(agendamento_data)
         logging.info(f"Agendamento salvo no Firestore com ID: {agendamento_ref.id}")
 
-        # 4. DISPARO DO E-MAIL (SALÃO e CLIENTE)
+        # 5. DISPARO DO E-MAIL (SALÃO e CLIENTE)
+        # ... (código de disparo de e-mail) ...
         try:
             email_service.send_confirmation_email_to_salon(
                 salon_email=salon_email_destino, salon_name=salon_name, 
                 customer_name=user_name, client_phone=user_phone, 
                 service_name=service_name, start_time_iso=start_time_str
             )
-            # <<< CORREÇÃO AQUI: Passando o salao_id >>>
             email_service.send_confirmation_email_to_customer(
                 customer_email=user_email, customer_name=user_name,
                 service_name=service_name, start_time_iso=start_time_str,
-                salon_name=salon_name,
-                salao_id=salao_id # Passa o ID para o link "Agendar Novamente"
+                salon_name=salon_name, salao_id=salao_id # Passa o ID para o link "Agendar Novamente"
             )
         except Exception as e:
             logging.error(f"Erro CRÍTICO ao disparar e-mail: {e}")
 
-        # 5. LÓGICA DE ESCRITA HÍBRIDA (Google Calendar)
+        # 6. LÓGICA DE ESCRITA HÍBRIDA (Google Calendar)
+        # ... (código de sincronização do Google Calendar) ...
         google_event_data = {
             "summary": f"{service_name} - {user_name}",
             "description": f"Agendamento via Horalis.\nCliente: {user_name}\nTelefone: {user_phone}\nServiço: {service_name}",
@@ -464,11 +544,18 @@ async def create_appointment(appointment: Appointment):
         else:
             logging.info(f"Sincronização Google desativada ou refresh_token ausente para {salao_id}. Pulando etapa de escrita no Google.")
 
-        # 6. Retorna a resposta ao cliente final
+        # 7. Retorna a resposta ao cliente final
         return {"message": f"Agendamento para '{service_name}' criado com sucesso!"}
 
     except HTTPException as httpe: 
+        # Garante que o agendamento temporário seja deletado se uma HTTPException for levantada
+        if agendamento_ref:
+             try: agendamento_ref.delete()
+             except Exception: pass
         raise httpe
     except Exception as e:
         logging.exception(f"Erro CRÍTICO ao criar agendamento (Híbrido):")
+        if agendamento_ref:
+            try: agendamento_ref.delete()
+            except Exception: pass
         raise HTTPException(status_code=500, detail="Erro interno ao criar agendamento.")
