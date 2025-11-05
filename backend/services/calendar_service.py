@@ -237,7 +237,7 @@ def find_available_slots(
                                 "end": datetime.fromisoformat(end_str).astimezone(local_tz)
                             })
                 except Exception as e: logging.error(f"Erro ao buscar eventos do Google: {e}")
-                logging.info(f"Horários ocupados brutos para análise: {busy_periods}") # <<<< ADICIONE ESTA LINHA!
+                logging.error(f"DEBUG BRUTO: Períodos Ocupados: {busy_periods}") # <<<< ADICIONE ESTA LINHA!
 
         # 5. Calcular Vãos Disponíveis (COM FILTRO DE ALMOÇO)
         logging.info(f"Calculando vãos com base em {len(busy_periods)} eventos combinados.")
