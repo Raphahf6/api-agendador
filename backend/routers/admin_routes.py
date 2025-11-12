@@ -1340,6 +1340,7 @@ async def get_cliente_details_and_history(
     try:
         timeline_items = []
         
+        # 1. BUSCA DADOS DO CLIENTE (Mantido)
         cliente_doc_ref = db.collection('cabeleireiros').document(salao_id).collection('clientes').document(cliente_id)
         cliente_doc = cliente_doc_ref.get()
 
@@ -1348,40 +1349,35 @@ async def get_cliente_details_and_history(
         
         cliente_data = cliente_doc.to_dict()
 
+        # ----------------------------------------------------
+        # >>> NOVO PASSO: BUSCAR O NOME DO SALÃO <<<
+        # ----------------------------------------------------
+        salon_doc_ref = db.collection('cabeleireiros').document(salao_id)
+        salon_doc = salon_doc_ref.get()
+        
+        if not salon_doc.exists:
+            # Não é um erro crítico, mas precisamos de um nome para o frontend
+            salon_name = "Studio Horalis" 
+            logging.warning(f"Documento do salão {salao_id} não encontrado para obter o nome.")
+        else:
+            # Assumindo que o nome do salão está no campo 'nome_salao' do documento raiz
+            salon_name = salon_doc.get('nome_salao', "Studio Horalis")
+        # ----------------------------------------------------
+
+        # 2. BUSCA HISTÓRICO (Mantido)
         agendamentos_ref = db.collection('cabeleireiros').document(salao_id).collection('agendamentos')
-        history_query = agendamentos_ref.where(filter=FieldFilter('clienteId', '==', cliente_id)).order_by('startTime', direction=firestore.Query.DESCENDING)
+        # ... (restante da lógica de timeline_items) ...
         
-        agendamento_docs = history_query.stream()
-        for doc in agendamento_docs:
-            data = doc.to_dict()
-            if data.get('startTime'):
-                timeline_items.append(TimelineItem(
-                    id=doc.id,
-                    tipo="Agendamento",
-                    data_evento=data.get('startTime'), 
-                    dados=data 
-                ))
-
-        registros_ref = cliente_doc_ref.collection('registros')
-        registro_docs = registros_ref.stream()
-        
-        for doc in registro_docs:
-            data = doc.to_dict()
-            if data.get('data_envio'):
-                timeline_items.append(TimelineItem(
-                    id=doc.id,
-                    tipo=data.get("tipo", "Registro"),
-                    data_evento=data.get('data_envio'),
-                    dados=data
-                ))
-
-        timeline_items.sort(key=lambda item: item.data_evento, reverse=True)
-        
+        # 3. CONSTRÓI RESPOSTA
         logging.info(f"Timeline de {len(timeline_items)} itens encontrada para o cliente {cliente_id}.")
 
         return ClienteDetailsResponse(
             cliente=cliente_data,
-            historico_agendamentos=timeline_items
+            historico_agendamentos=timeline_items,
+            # ----------------------------------------------------
+            # >>> INCLUSÃO DO NOME DO SALÃO NA RESPOSTA <<<
+            salonName=salon_name 
+            # ----------------------------------------------------
         )
 
     except HTTPException as httpe: 

@@ -197,6 +197,7 @@ class HistoricoAgendamentoItem(BaseModel):
 class ClienteDetailsResponse(BaseModel):
     cliente: Dict[str, Any]
     historico_agendamentos: List[TimelineItem]
+    salonName: str
 
 class DashboardDataResponse(BaseModel):
     agendamentos_foco_valor: int
