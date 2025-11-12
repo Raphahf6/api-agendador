@@ -1361,7 +1361,7 @@ async def get_cliente_details_and_history(
             logging.warning(f"Documento do salão {salao_id} não encontrado para obter o nome.")
         else:
             # Assumindo que o nome do salão está no campo 'nome_salao' do documento raiz
-            salon_name = salon_doc.get('nome_salao', "Studio Horalis")
+            salon_name = salon_doc.get('nome_salao')
         # ----------------------------------------------------
 
         # 2. BUSCA HISTÓRICO (Mantido)
