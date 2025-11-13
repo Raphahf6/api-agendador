@@ -50,56 +50,66 @@ def is_conflict_with_lunch(
     salon_data: Dict[str, Any]
 ) -> bool:
     """
-    Verifica se um agendamento entra em conflito com o horário de almoço do salão.
-    
-    O 'booking_start_dt' já deve estar no fuso horário correto (geralmente UTC se for ISO 8601).
+    Verifica conflito com almoço considerando o FUSO HORÁRIO (America/Sao_Paulo).
     """
-    
-    # 1. Determina o dia da semana (ex: 'monday', 'tuesday').
-    # A agenda detalhada está em inglês no Python.
-    day_name = booking_start_dt.strftime('%A').lower() 
-    
-    # 2. Busca a agenda detalhada do salão.
-    daily_schedule: Optional[Dict[str, Any]] = salon_data.get('horario_trabalho_detalhado', {}).get(day_name)
-
-    if not daily_schedule:
-        # Se não houver agenda detalhada para o dia, a lógica do find_available_slots deve pegar isso,
-        # mas aqui assumimos que não há conflito de almoço se a agenda estiver ausente.
-        return False
-
-    # 3. Verifica a existência e necessidade de almoço
-    if not daily_schedule.get('hasLunch') or not daily_schedule.get('lunchStart') or not daily_schedule.get('lunchEnd'):
-        return False
-
-    lunch_start_str = daily_schedule['lunchStart'] # Ex: '12:00'
-    lunch_end_str = daily_schedule['lunchEnd']     # Ex: '13:00'
-    service_duration = timedelta(minutes=service_duration_minutes)
-    
-    # 4. Parsing dos horários de almoço para o dia da reserva
     try:
-        # Pega a data da reserva
-        date_of_booking = booking_start_dt.date()
+        # 1. Define o Fuso Horário do Salão (Idealmente viria do salon_data, mas fixamos BR por enquanto)
+        timezone = pytz.timezone('America/Sao_Paulo')
+
+        # 2. Converte a data do agendamento (que vem em UTC) para o horário local do salão
+        if booking_start_dt.tzinfo is None:
+            # Se for naive, assume UTC e converte
+            booking_local = pytz.utc.localize(booking_start_dt).astimezone(timezone)
+        else:
+            # Se já tiver fuso, apenas converte
+            booking_local = booking_start_dt.astimezone(timezone)
+
+        # 3. Determina o dia da semana baseado no horário LOCAL (Isso corrige bugs de virada de dia)
+        day_name = booking_local.strftime('%A').lower() # ex: 'monday', 'tuesday'
+
+        # 4. Busca a configuração do dia
+        daily_schedule = salon_data.get('horario_trabalho_detalhado', {}).get(day_name)
+
+        if not daily_schedule:
+            return False # Sem agenda configurada, sem conflito de almoço explícito
+
+        # 5. Verifica se tem almoço configurado
+        if not daily_schedule.get('hasLunch') or not daily_schedule.get('lunchStart') or not daily_schedule.get('lunchEnd'):
+            return False
+
+        # 6. Monta os horários de almoço usando a data LOCAL
+        lunch_start_str = daily_schedule['lunchStart']
+        lunch_end_str = daily_schedule['lunchEnd']
         
-        # Converte as strings 'HH:MM' para objetos datetime completos no dia
+        date_local = booking_local.date()
+        
         lunch_start_time = datetime.strptime(lunch_start_str, '%H:%M').time()
         lunch_end_time = datetime.strptime(lunch_end_str, '%H:%M').time()
-        
-        # Cria objetos datetime combinando a data da reserva com os horários de almoço
-        lunch_start_dt = datetime.combine(date_of_booking, lunch_start_time)
-        lunch_end_dt = datetime.combine(date_of_booking, lunch_end_time)
-        
-    except ValueError as e:
-        logging.error(f"Formato de horário de almoço inválido no DB: {e}")
-        return False
-        
-    # 5. Determina o fim do agendamento
-    booking_end_dt = booking_start_dt + service_duration
 
-    # 6. Lógica de detecção de sobreposição (Overlap)
-    # Conflito existe se: [Início da Reserva] < [Fim do Almoço] E [Fim da Reserva] > [Início do Almoço]
-    is_overlapping = (booking_start_dt < lunch_end_dt) and (booking_end_dt > lunch_start_dt)
-    
-    return is_overlapping
+        # Cria datetimes localizados para o almoço
+        lunch_start_dt = timezone.localize(datetime.combine(date_local, lunch_start_time))
+        lunch_end_dt = timezone.localize(datetime.combine(date_local, lunch_end_time))
+
+        # 7. Calcula o fim do agendamento
+        service_duration = timedelta(minutes=service_duration_minutes)
+        booking_end_local = booking_local + service_duration
+
+        # 8. Log para Debug (Isso vai aparecer no seu terminal do backend, ajuda muito!)
+        logging.info(f"CHECK ALMOÇO [{day_name}]: Agendamento({booking_local.strftime('%H:%M')} - {booking_end_local.strftime('%H:%M')}) vs Almoço({lunch_start_str} - {lunch_end_str})")
+
+        # 9. Verifica Sobreposição
+        # Se (InicioReserva < FimAlmoço) E (FimReserva > InicioAlmoço)
+        if (booking_local < lunch_end_dt) and (booking_end_local > lunch_start_dt):
+            logging.warning(f"CONFLITO DE ALMOÇO DETECTADO!")
+            return True
+
+        return False
+
+    except Exception as e:
+        logging.error(f"Erro ao verificar almoço: {e}")
+        # Em caso de erro na lógica de verificação, é mais seguro permitir (ou bloquear, dependendo da sua regra)
+        # Aqui retornamos False para não travar o agendamento por erro de código, mas logamos o erro.
+        return False
 # --- Função Utility para o CRM ---
 def check_and_update_cliente_profile(
     salao_id: str, 
