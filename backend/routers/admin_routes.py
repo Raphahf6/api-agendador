@@ -24,7 +24,7 @@ from core.models import (
     EmailPromocionalBody, NotaManualBody, TimelineItem, CalendarEvent, 
     ReagendamentoBody, UserPaidSignupPayload, DashboardDataResponse, 
     PayerIdentification, PayerData, HistoricoAgendamentoItem, ClienteDetailsResponse,
-    MarketingMassaBody,PagamentoSettingsBody
+    MarketingMassaBody,PagamentoSettingsBody,OwnerRegisterRequest
 )
 from core.auth import get_current_user 
 from core.db import get_all_clients_from_db, get_hairdresser_data_from_db, db
@@ -392,6 +392,71 @@ async def criar_conta_paga_com_pagamento(payload: UserPaidSignupPayload,
         except Exception as db_err: logging.error(f"Falha no rollback do Firestore: {db_err}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=error_message)
     
+    
+@auth_router.post("/register-owner", status_code=status.HTTP_201_CREATED)
+def register_owner(data: OwnerRegisterRequest):
+    try:
+        # 1. Configurar datas
+        tz = pytz.timezone('America/Sao_Paulo')
+        now = datetime.now(tz)
+        trial_end = now + timedelta(days=7) # 🌟 7 Dias de Teste Grátis
+
+        # 2. Dados Iniciais do Salão
+        # Aqui definimos os padrões para que o painel não quebre
+        new_salon_data = {
+            "ownerUID": data.uid,
+            "nome_salao": data.nome_salao,
+            "numero_whatsapp": data.whatsapp, # Mapeando para o nome usado no BD
+            "email_contato": data.email,
+            "cpf_proprietario": data.cpf,
+            
+            # --- Configurações de Assinatura ---
+            "subscriptionStatus": "trialing", # Status de Teste
+            "trialEndsAt": trial_end.isoformat(),
+            "createdAt": now.isoformat(),
+            
+            # --- Configurações Visuais Padrão ---
+            "cor_primaria": "#0E7490",
+            "cor_secundaria": "#FFFFFF",
+            "tagline": "Agende seu horário conosco!",
+            
+            # --- Configurações de Negócio Padrão ---
+            "marketing_cota_total": 100,
+            "marketing_cota_usada": 0,
+            "sinal_valor": 0.0,
+            "mp_public_key": None,
+            
+            # --- Horário Padrão (Seg-Sex 09-18) ---
+            "horario_trabalho_detalhado": {
+                "monday": {"isOpen": True, "openTime": "09:00", "closeTime": "18:00", "hasLunch": True, "lunchStart": "12:00", "lunchEnd": "13:00"},
+                "tuesday": {"isOpen": True, "openTime": "09:00", "closeTime": "18:00", "hasLunch": True, "lunchStart": "12:00", "lunchEnd": "13:00"},
+                "wednesday": {"isOpen": True, "openTime": "09:00", "closeTime": "18:00", "hasLunch": True, "lunchStart": "12:00", "lunchEnd": "13:00"},
+                "thursday": {"isOpen": True, "openTime": "09:00", "closeTime": "18:00", "hasLunch": True, "lunchStart": "12:00", "lunchEnd": "13:00"},
+                "friday": {"isOpen": True, "openTime": "09:00", "closeTime": "18:00", "hasLunch": True, "lunchStart": "12:00", "lunchEnd": "13:00"},
+                "saturday": {"isOpen": True, "openTime": "09:00", "closeTime": "14:00", "hasLunch": False, "lunchStart": None, "lunchEnd": None},
+                "sunday": {"isOpen": False, "openTime": "09:00", "closeTime": "18:00", "hasLunch": False, "lunchStart": None, "lunchEnd": None},
+            }
+        }
+
+        # 3. Salvar no Firestore
+        # Usamos o UID do usuário como ID do documento para facilitar a busca (1 para 1)
+        # Ou você pode gerar um ID aleatório, mas usar o UID é prático.
+        
+        # Opção A: Usar UID como ID do Documento (Recomendado se 1 usuário = 1 salão)
+        db.collection('cabeleireiros').document(data.uid).set(new_salon_data)
+        
+        # Opção B: Se o ID do salão for diferente do UID, você precisa gerar um e vincular.
+        # Mas pelo seu código anterior, parece que salaoId é passado na URL, então vamos garantir que o login redirecione corretamente.
+
+        return {
+            "message": "Conta criada com sucesso!",
+            "salao_id": data.uid,
+            "trial_ends_at": trial_end.isoformat()
+        }
+
+    except Exception as e:
+        print(f"Erro ao registrar dono: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro interno ao criar conta: {str(e)}")
 
 # --- ENDPOINT PARA CRIAR ASSINATURA (LOGADO) ---
 @router.post("/pagamentos/criar-assinatura", status_code=status.HTTP_201_CREATED)

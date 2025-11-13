@@ -60,7 +60,13 @@ class SalonPublicDetails(BaseModel):
         # Ex: db_data['telefone'] = db_data.pop('numero_whatsapp')
         populate_by_name = True
     
-
+class OwnerRegisterRequest(BaseModel):
+    nome_salao: str
+    whatsapp: str
+    email: EmailStr
+    cpf: str
+    uid: str  # UID que veio do Firebase Auth no Frontend
+    
 class ClientDetail(BaseModel): # Admin
     id: str
     nome_salao: str
