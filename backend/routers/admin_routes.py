@@ -399,34 +399,47 @@ def register_owner(data: OwnerRegisterRequest):
         # 1. Configurar datas
         tz = pytz.timezone('America/Sao_Paulo')
         now = datetime.now(tz)
-        trial_end = now + timedelta(days=7) # 🌟 7 Dias de Teste Grátis
+        trial_end = now + timedelta(days=7)
 
-        # 2. Dados Iniciais do Salão
-        # Aqui definimos os padrões para que o painel não quebre
+        # 2. Definir o ID do Salão como o WhatsApp (Apenas Números)
+        # Remove tudo que não for dígito
+        salao_id = re.sub(r'\D', '', data.whatsapp)
+
+        if not salao_id:
+            raise HTTPException(status_code=400, detail="Número de WhatsApp inválido para gerar ID.")
+
+        # 3. Verificar se já existe um salão com esse ID (Segurança)
+        doc_ref = db.collection('cabeleireiros').document(salao_id)
+        if doc_ref.get().exists:
+            raise HTTPException(status_code=409, detail="Já existe uma conta registrada com este número de WhatsApp.")
+
+        # 4. Dados Iniciais do Salão
         new_salon_data = {
-            "ownerUID": data.uid,
+            "ownerUID": data.uid, # O vínculo com o login continua aqui
+            "id": salao_id,       # Salva o ID dentro do documento também
             "nome_salao": data.nome_salao,
-            "numero_whatsapp": data.whatsapp, # Mapeando para o nome usado no BD
+            "numero_whatsapp": data.whatsapp, # Mantém formato visual se quiser
+            "telefone": data.whatsapp,        # Campo novo do microsite
             "email_contato": data.email,
             "cpf_proprietario": data.cpf,
             
-            # --- Configurações de Assinatura ---
-            "subscriptionStatus": "trialing", # Status de Teste
+            # --- Assinatura ---
+            "subscriptionStatus": "trialing",
             "trialEndsAt": trial_end.isoformat(),
             "createdAt": now.isoformat(),
             
-            # --- Configurações Visuais Padrão ---
+            # --- Visual ---
             "cor_primaria": "#0E7490",
             "cor_secundaria": "#FFFFFF",
             "tagline": "Agende seu horário conosco!",
             
-            # --- Configurações de Negócio Padrão ---
+            # --- Configurações ---
             "marketing_cota_total": 100,
             "marketing_cota_usada": 0,
             "sinal_valor": 0.0,
             "mp_public_key": None,
             
-            # --- Horário Padrão (Seg-Sex 09-18) ---
+            # --- Horário Padrão ---
             "horario_trabalho_detalhado": {
                 "monday": {"isOpen": True, "openTime": "09:00", "closeTime": "18:00", "hasLunch": True, "lunchStart": "12:00", "lunchEnd": "13:00"},
                 "tuesday": {"isOpen": True, "openTime": "09:00", "closeTime": "18:00", "hasLunch": True, "lunchStart": "12:00", "lunchEnd": "13:00"},
@@ -438,22 +451,17 @@ def register_owner(data: OwnerRegisterRequest):
             }
         }
 
-        # 3. Salvar no Firestore
-        # Usamos o UID do usuário como ID do documento para facilitar a busca (1 para 1)
-        # Ou você pode gerar um ID aleatório, mas usar o UID é prático.
+        # 5. Salvar no Firestore usando o WhatsApp como ID
+        doc_ref.set(new_salon_data)
         
-        # Opção A: Usar UID como ID do Documento (Recomendado se 1 usuário = 1 salão)
-        db.collection('cabeleireiros').document(data.uid).set(new_salon_data)
-        
-        # Opção B: Se o ID do salão for diferente do UID, você precisa gerar um e vincular.
-        # Mas pelo seu código anterior, parece que salaoId é passado na URL, então vamos garantir que o login redirecione corretamente.
-
         return {
             "message": "Conta criada com sucesso!",
-            "salao_id": data.uid,
+            "salao_id": salao_id,
             "trial_ends_at": trial_end.isoformat()
         }
 
+    except HTTPException as he:
+        raise he
     except Exception as e:
         print(f"Erro ao registrar dono: {e}")
         raise HTTPException(status_code=500, detail=f"Erro interno ao criar conta: {str(e)}")
