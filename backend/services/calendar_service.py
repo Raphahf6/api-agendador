@@ -4,6 +4,7 @@ import os
 import re # Necessário se for usado em outros lugares
 from datetime import datetime, time, timedelta
 from typing import List, Dict, Any, Optional 
+from google.cloud.firestore import FieldFilter
 
 from core.db import db # Firestore DB
 
