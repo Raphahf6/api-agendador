@@ -159,6 +159,8 @@ def check_and_update_cliente_profile(
 def get_salon_services_and_details(salao_id: str):
     logging.info(f"Buscando detalhes/serviços para: {salao_id}")
     salon_data = get_hairdresser_data_from_db(salao_id) 
+    if 'numero_whatsapp' in salon_data:
+        salon_data['telefone'] = salon_data.pop('numero_whatsapp')
     if not salon_data:
         raise HTTPException(status_code=404, detail="Salão não encontrado")
     

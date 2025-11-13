@@ -27,14 +27,39 @@ class DailySchedule(BaseModel):
 # Se Service não estiver definido, você precisará defini-lo (usando o seu modelo real)
 
 class SalonPublicDetails(BaseModel):
+    # --- Campos Core & Cores ---
     nome_salao: str
     tagline: Optional[str] = None
     url_logo: Optional[str] = None
     cor_primaria: str = "#9daa9d"
     cor_secundaria: str = "#FFFFFF"
-    servicos: List[Service] = []
+    
+    # --- Mapeamento de Campos de Conteúdo (Microsite) ---
+    
+    # Mapeado de 'numero_whatsapp' no Firebase
+    telefone: Optional[str] = Field(None, description="Número de contato principal (WhatsApp).") 
+    
+    # Estrutura do horário de trabalho detalhado do Firebase
+    horario_trabalho_detalhado: Dict[str, Dict[str, Any]] = Field({}, description="Agenda detalhada (segunda, terça, etc).")
+    
+    # 🚨 CAMPOS FALTANDO NO FIREBASE ATUALMENTE (Mantidos como default para não quebrar)
+    endereco_completo: Optional[str] = Field(None, description="Endereço completo para exibição.")
+    formas_pagamento: Optional[str] = Field(None, description="Formas de pagamento aceitas pelo salão.")
+    fotos_carousel: List[Dict[str, str]] = Field([], description="Imagens para o carrossel.")
+    comodidades: Dict[str, bool] = Field({}, description="Comodidades disponíveis (wifi, café, etc).")
+    redes_sociais: Dict[str, Optional[str]] = Field({}, description="Links para redes sociais.")
+    
+    # --- Campos do Agendamento/Pagamento ---
+    servicos: List[Any] = Field([], description="Lista de serviços disponíveis.")
     mp_public_key: Optional[str] = None
     sinal_valor: Optional[float] = 0.0
+
+    class Config:
+        # Permite que o Pydantic mapeie o campo 'numero_whatsapp' (do DB) para 'telefone' (do Modelo)
+        # Se você fizer a renomeação no Python antes de criar a instância, isso não é necessário.
+        # Ex: db_data['telefone'] = db_data.pop('numero_whatsapp')
+        populate_by_name = True
+    
 
 class ClientDetail(BaseModel): # Admin
     id: str
