@@ -425,8 +425,8 @@ def register_owner(data: OwnerRegisterRequest):
             
             # --- Assinatura ---
             "subscriptionStatus": "trialing",
-            "trialEndsAt": trial_end.isoformat(),
-            "createdAt": now.isoformat(),
+            "trialEndsAt": trial_end,  # <--- MUDOU AQUI (Sem .isoformat())
+            "createdAt": now,          # <--- MUDOU AQUI (Sem .isoformat())
             
             # --- Visual ---
             "cor_primaria": "#0E7490",
@@ -814,18 +814,31 @@ async def mercadopago_auth_callback_handler(
 @router.get("/user/salao-id", response_model=dict[str, str])
 async def get_salao_id_for_user(current_user: dict[str, Any] = Depends(get_current_user)):
     user_uid = current_user.get("uid")
+    
     try:
         clients_ref = db.collection('cabeleireiros')
-        query = clients_ref.where(filter=FieldFilter('ownerUID', '==', user_uid)).limit(1) 
-        client_doc_list = list(query.stream()) 
-        if not client_doc_list:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, 
-                                detail="Nenhum salão encontrado para esta conta de usuário.")
-        salao_id = client_doc_list[0].id 
+        
+        # Busca o documento onde o campo 'ownerUID' é igual ao UID do usuário logado
+        query = clients_ref.where(filter=FieldFilter('ownerUID', '==', user_uid)).limit(1)
+        
+        docs = list(query.stream())
+        
+        if not docs:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, 
+                detail="Nenhum salão encontrado para esta conta. Complete o cadastro."
+            )
+        
+        # O ID do documento agora é o telefone (ex: 11999999999)
+        salao_id = docs[0].id 
+        
         return {"salao_id": salao_id}
+
+    except HTTPException as he:
+        raise he
     except Exception as e:
         logging.exception(f"Erro ao buscar salão por UID ({user_uid}): {e}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno.")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno ao buscar dados do usuário.")
 
 @router.patch("/clientes/{salao_id}/google-sync", status_code=status.HTTP_200_OK)
 async def disconnect_google_sync(
