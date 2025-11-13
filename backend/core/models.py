@@ -71,21 +71,65 @@ class ClientDetail(BaseModel): # Admin
     horario_fim: Optional[str] = None
     servicos: List[Service] = []
     url_logo: Optional[str] = None
+    
+    # --- Cores e Branding ---
     cor_primaria: Optional[str] = None
     cor_secundaria: Optional[str] = None
     cor_gradiente_inicio: Optional[str] = None
     cor_gradiente_fim: Optional[str] = None
+    email_footer_message: Optional[str] = None # <--- NOVO: Mensagem de rodapé
+    
+    # --- Assinatura e Marketing ---
     subscriptionStatus: Optional[str] = None
     trialEndsAt: Optional[datetime] = None
-    marketing_cota_total: Optional[int] = 100 # Importe a constante ou defina 100
+    marketing_cota_total: Optional[int] = 100 
     marketing_cota_usada: Optional[int] = 0
     marketing_cota_reset_em: Optional[datetime] = None
+    
+    # --- Pagamento ---
     mp_public_key: Optional[str] = None
     sinal_valor: Optional[float] = 0.0
-    horario_trabalho_detalhado: Optional[Dict[str, DailySchedule]] = Field(
+    
+    # --- Horários Detalhados ---
+    horario_trabalho_detalhado: Optional[Dict[str, Any]] = Field(
         None,
         description="Estrutura detalhada de horários de funcionamento por dia, incluindo almoço."
     )
+
+    # =================================================================
+    # 🌟 NOVOS CAMPOS PARA O MICROSITE (Adicione estes) 🌟
+    # =================================================================
+    
+    # Contato e Localização
+    telefone: Optional[str] = Field(None, description="WhatsApp/Telefone principal.")
+    endereco_completo: Optional[str] = Field(None, description="Endereço completo para o mapa.")
+    
+    # Redes Sociais (Ex: {'instagram': '...', 'facebook': '...'})
+    redes_sociais: Optional[Dict[str, Optional[str]]] = Field(
+        default_factory=dict, 
+        description="Links para redes sociais."
+    )
+    
+    # Comodidades (Ex: {'wifi': True, 'estacionamento': False})
+    comodidades: Optional[Dict[str, bool]] = Field(
+        default_factory=dict, 
+        description="Lista de comodidades (booleans)."
+    )
+    
+    # Formas de Pagamento (Texto livre ou lista)
+    formas_pagamento: Optional[str] = Field(None, description="Texto descrevendo formas de pagamento.")
+    
+    # Galeria de Fotos (Lista de objetos com URL)
+    # Ex: [{'url': 'https://...', 'alt': 'Fachada'}]
+    fotos_carousel: Optional[List[Dict[str, str]]] = Field(
+        default_factory=list, 
+        description="Lista de fotos para o carrossel do microsite."
+    )
+
+    class Config:
+        # Permite que o modelo ignore campos extras se o front mandar algo a mais,
+        # mas ACEITE os campos definidos acima.
+        extra = "ignore"
 
 class NewClientData(BaseModel):
     """Modelo para validação e criação de dados de um novo salão/cliente."""
