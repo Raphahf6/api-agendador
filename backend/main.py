@@ -12,7 +12,7 @@ load_dotenv()
 
 # Importa os nossos novos módulos de rotas
 # Agora importamos os dois routers do admin_routes
-from routers import public_routes, admin_routes, financial_routes
+from routers import public_routes, admin_routes, financial_routes, stock_routes
 
 # (Serviços que são importados pelos routers)
 from services import calendar_service as calendar_service
@@ -86,6 +86,7 @@ app.include_router(admin_routes.webhook_router, prefix="/api/v1")
 app.include_router(admin_routes.auth_router, prefix="/api/v1")
 
 app.include_router(financial_routes.router, prefix="/api/v1") # <--- Adicione
+app.include_router(stock_routes.router, prefix="/api/v1") # <--- Adicione
 
 # --- Rota Raiz Principal ---
 @app.get("/", tags=["Root"])
