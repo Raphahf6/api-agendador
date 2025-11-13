@@ -174,6 +174,38 @@ def get_salon_services_and_details(salao_id: str):
     if not salon_data:
         raise HTTPException(status_code=404, detail="Salão não encontrado")
     
+    status_assinatura = salon_data.get("subscriptionStatus")
+    trial_ends_at = salon_data.get("trialEndsAt")
+    
+    is_active = False
+    
+    # 1. Verifica se está Ativo (Pago)
+    if status_assinatura == "active":
+        is_active = True
+    
+    # 2. Verifica se está em Trial Válido
+    elif status_assinatura == "trialing":
+        if trial_ends_at:
+            # Garante que trial_ends_at seja datetime com timezone
+            # O Firestore retorna datetime, mas se vier string ou naive, tratamos:
+            if isinstance(trial_ends_at, str):
+                trial_ends_at = datetime.fromisoformat(trial_ends_at)
+            
+            if trial_ends_at.tzinfo is None:
+                trial_ends_at = trial_ends_at.replace(tzinfo=pytz.utc)
+            
+            # Compara com agora (UTC)
+            if trial_ends_at > datetime.now(pytz.utc):
+                is_active = True
+
+    # 🚫 SE NÃO ESTIVER ATIVO, BLOQUEIA O ACESSO PÚBLICO
+    if not is_active:
+        logging.warning(f"Acesso público bloqueado para salão {salao_id}. Status: {status_assinatura}")
+        raise HTTPException(
+            status_code=403, # Forbidden
+            detail="Este estabelecimento está temporariamente indisponível."
+        )
+    
     services_list_formatted = []
     if salon_data.get("servicos_data"):
         for service_id, service_info in salon_data["servicos_data"].items():
