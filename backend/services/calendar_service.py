@@ -21,7 +21,7 @@ WEEKDAY_MAP_DB = {
     0: 'monday', 1: 'tuesday', 2: 'wednesday', 3: 'thursday',
     4: 'friday', 5: 'saturday', 6: 'sunday'
 }
-SLOT_INTERVAL_MINUTES = 15
+SLOT_INTERVAL_MINUTES = 30
 
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET")
@@ -160,116 +160,155 @@ def find_available_slots(
     date_str: str
 ) -> List[str]:
     """
-    Encontra horários disponíveis, respeitando a AGENDA DETALHADA e o ALMOÇO.
+    Encontra horários disponíveis, consultando o Firestore e respeitando a AGENDA DETALHADA e o ALMOÇO.
     """
     if db is None: 
         logging.error("Firestore DB não está inicializado.")
         return []
 
     available_slots_iso = [] 
+    
     try:
+        # 1. Configuração de Fuso Horário e Data Alvo
         local_tz = pytz.timezone(LOCAL_TIMEZONE)
         target_date_local = datetime.strptime(date_str, '%Y-%m-%d').date()
         day_of_week_name = WEEKDAY_MAP_DB.get(target_date_local.weekday())
         
-        # 1. BUSCANDO AGENDA DETALHADA DO DIA ALVO (Fonte de verdade)
+        # 2. Obter Configuração do Dia (Fonte de Verdade: horario_trabalho_detalhado)
         daily_config = salon_data.get('horario_trabalho_detalhado', {}).get(day_of_week_name)
 
         if not daily_config or not daily_config.get('isOpen'):
             logging.info(f"Dia de folga ou não configurado detectado para {date_str}.")
             return []
         
-        # 2. Definir Período de Trabalho (USANDO daily_config)
+        # 3. Definir Início e Fim do Expediente
         start_hour_str = daily_config.get('openTime', '09:00')
         end_hour_str = daily_config.get('closeTime', '18:00')
 
         start_work_time = datetime.strptime(start_hour_str, '%H:%M').time()
         end_work_time = datetime.strptime(end_hour_str, '%H:%M').time()
 
+        # Cria datetimes localizados para o dia alvo
         day_start_dt = local_tz.localize(datetime.combine(target_date_local, start_work_time))
         day_end_dt = local_tz.localize(datetime.combine(target_date_local, end_work_time))
 
-        # 3. Definir Ponto de Partida da Busca (incluindo hora atual)
+        # 4. Definir Ponto de Partida da Busca (Se for hoje, começa agora + intervalo)
         now_local = datetime.now(local_tz)
-        minutes_to_next_interval = SLOT_INTERVAL_MINUTES - (now_local.minute % SLOT_INTERVAL_MINUTES)
-        start_search_today = now_local.replace(second=0, microsecond=0) + timedelta(minutes=minutes_to_next_interval)
-        search_from = max(start_search_today, day_start_dt) if target_date_local == now_local.date() else day_start_dt
+        if target_date_local == now_local.date():
+            # Arredonda para o próximo intervalo de 30min
+            minutes_to_next_interval = SLOT_INTERVAL_MINUTES - (now_local.minute % SLOT_INTERVAL_MINUTES)
+            start_search_today = now_local.replace(second=0, microsecond=0) + timedelta(minutes=minutes_to_next_interval)
+            search_from = max(start_search_today, day_start_dt)
+        else:
+            search_from = day_start_dt
 
+        # Se já passou do horário de fechar, retorna vazio
         if search_from >= day_end_dt:
              logging.info(f"Horário de início da busca ({search_from}) é após o fim do expediente.")
              return []
 
-        # 4. COLETA DE HORÁRIOS OCUPADOS (HÍBRIDO)
-        # [Mantenha aqui a sua lógica de coleta do Firestore e Google Calendar 
-        # que preenche a lista busy_periods = [...] ]
-        # Assumiremos que busy_periods está preenchida, mas vazia no seu caso de debug.
+        # 5. COLETA DE HORÁRIOS OCUPADOS (FIRESTORE)
         busy_periods = [] 
+        
+        # Define o range de busca no banco (dia inteiro em UTC)
+        day_start_utc = day_start_dt.astimezone(pytz.utc)
+        # Adiciona margem de segurança no fim do dia para pegar agendamentos que terminam depois
+        day_end_utc = day_end_dt.astimezone(pytz.utc) + timedelta(hours=3) 
 
-        # 5. DEFINIR LIMITES DO ALMOÇO (Para o filtro inline)
-        lunch_start_dt_calc = None
-        lunch_end_dt_calc = None
+        agendamentos_ref = db.collection('cabeleireiros').document(salao_id).collection('agendamentos')
+        
+        # Query para buscar agendamentos que colidem com o dia alvo
+        # Buscamos tudo que começa ou termina dentro do dia
+        query = agendamentos_ref.where(filter=FieldFilter("startTime", ">=", day_start_utc))\
+                                .where(filter=FieldFilter("startTime", "<=", day_end_utc))
+        
+        docs = query.stream()
 
-        if daily_config.get('hasLunch'):
-            lunch_start_str = daily_config.get('lunchStart')
-            lunch_end_str = daily_config.get('lunchEnd')
-            
-            try:
-                lunch_start_time = datetime.strptime(lunch_start_str, '%H:%M').time()
-                lunch_end_time = datetime.strptime(lunch_end_str, '%H:%M').time()
+        for doc in docs:
+            data = doc.to_dict()
+            # Ignora cancelados/rejeitados
+            if data.get('status') in ['cancelado', 'rejeitado', 'canceled', 'rejected']:
+                continue
                 
-                lunch_start_dt_calc = local_tz.localize(datetime.combine(target_date_local, lunch_start_time))
-                lunch_end_dt_calc = local_tz.localize(datetime.combine(target_date_local, lunch_end_time))
+            appt_start = data.get('startTime')
+            appt_end = data.get('endTime')
+            
+            if appt_start and appt_end:
+                # Garante conversão para timezone local para comparação correta
+                if appt_start.tzinfo is None: appt_start = pytz.utc.localize(appt_start)
+                if appt_end.tzinfo is None: appt_end = pytz.utc.localize(appt_end)
+                
+                busy_periods.append({
+                    'start': appt_start.astimezone(local_tz),
+                    'end': appt_end.astimezone(local_tz)
+                })
+
+        # 6. ADICIONAR ALMOÇO COMO "PERÍODO OCUPADO"
+        if daily_config.get('hasLunch'):
+            try:
+                l_start_time = datetime.strptime(daily_config.get('lunchStart'), '%H:%M').time()
+                l_end_time = datetime.strptime(daily_config.get('lunchEnd'), '%H:%M').time()
+                
+                l_start_dt = local_tz.localize(datetime.combine(target_date_local, l_start_time))
+                l_end_dt = local_tz.localize(datetime.combine(target_date_local, l_end_time))
+                
+                busy_periods.append({'start': l_start_dt, 'end': l_end_dt})
             except (ValueError, TypeError):
-                logging.error("Erro ao converter string do horário de almoço. Pulando filtro de almoço.")
+                logging.error("Erro ao processar horário de almoço. Ignorando.")
+
+        # Ordena os períodos ocupados pelo início
+        busy_periods.sort(key=lambda x: x['start'])
+
+        # 7. CALCULAR VÃOS DISPONÍVEIS (Loop Principal)
+        logging.info(f"Calculando vãos com base em {len(busy_periods)} eventos ocupados (Agenda + Almoço).")
         
-        # 6. Calcular Vãos Disponíveis (COM FILTRO INLINE E AVANÇO)
-        logging.info(f"Calculando vãos com base em {len(busy_periods)} eventos combinados.")
-        potential_slot = search_from 
+        current_slot = search_from 
         
-        while potential_slot < day_end_dt:
-            slot_end = potential_slot + timedelta(minutes=service_duration_minutes)
-            if slot_end > day_end_dt: break 
+        while current_slot < day_end_dt:
+            slot_end = current_slot + timedelta(minutes=service_duration_minutes)
             
-            is_free = True
+            # Se o serviço termina depois que o salão fecha, para o loop
+            if slot_end > day_end_dt: 
+                break 
             
-            # ----------------------------------------------------
-            # >>> FILTRO 1: VERIFICAÇÃO DE ALMOÇO INLINE <<<
-            # ----------------------------------------------------
-            if lunch_start_dt_calc and lunch_end_dt_calc:
-                # Conflito existe se: slot_start < lunch_end AND slot_end > lunch_start
-                if potential_slot < lunch_end_dt_calc and slot_end > lunch_start_dt_calc:
-                    is_free = False
-                    
-                    # Avança o slot para o FIM do almoço (13:00)
-                    potential_slot = lunch_end_dt_calc 
-                    minute_offset = potential_slot.minute % SLOT_INTERVAL_MINUTES
-                    if minute_offset != 0:
-                         potential_slot += timedelta(minutes=SLOT_INTERVAL_MINUTES - minute_offset)
-                    
-                    continue # Volta ao topo do while com o novo horário (13:00)
-            # ----------------------------------------------------
+            is_conflict = False
             
-            # --- FILTRO 2: VERIFICAÇÃO DE CONFLITO COM EVENTOS OCUPADOS (Sua lógica original) ---
+            # Verifica colisão com cada período ocupado
             for event in busy_periods:
-                if potential_slot < event['end'] and slot_end > event['start']:
-                    is_free = False
-                    potential_slot = event['end']
-                    minute_offset = potential_slot.minute % SLOT_INTERVAL_MINUTES
+                # Lógica de Colisão: (StartA < EndB) e (EndA > StartB)
+                if current_slot < event['end'] and slot_end > event['start']:
+                    is_conflict = True
+                    
+                    # Otimização: Se colidiu, pula direto para o fim desse evento ocupado
+                    # Arredonda para o próximo intervalo de 30min para manter a grade limpa
+                    next_possible_start = event['end']
+                    minute_offset = next_possible_start.minute % SLOT_INTERVAL_MINUTES
                     if minute_offset != 0:
-                        potential_slot += timedelta(minutes=SLOT_INTERVAL_MINUTES - minute_offset)
-                    break 
+                        next_possible_start += timedelta(minutes=SLOT_INTERVAL_MINUTES - minute_offset)
+                    
+                    # Se o pulo for para frente, atualiza. Se for para trás (erro de lógica), apenas avança 30min.
+                    if next_possible_start > current_slot:
+                        current_slot = next_possible_start
+                    else:
+                        current_slot += timedelta(minutes=SLOT_INTERVAL_MINUTES)
+                        
+                    break # Sai do loop de verificação de eventos e tenta o novo slot
             
-            # Se passou pelos dois filtros, adiciona o slot
-            if is_free:
-                available_slots_iso.append(potential_slot.isoformat())
-                potential_slot += timedelta(minutes=SLOT_INTERVAL_MINUTES)
+            # Se não houve conflito com nenhum evento, adiciona à lista
+            if not is_conflict:
+                available_slots_iso.append(current_slot.isoformat())
+                current_slot += timedelta(minutes=SLOT_INTERVAL_MINUTES) # Avança para o próximo slot padrão
             
+            # Nota: Se houve conflito, o 'current_slot' já foi atualizado dentro do loop 'for'
+        
+        # Remove duplicatas e ordena
         final_slots = sorted(list(set(available_slots_iso)))
-        logging.info(f"Retornando {len(final_slots)} horários (Híbrido) para {date_str}.")
+        
+        logging.info(f"Retornando {len(final_slots)} horários livres para {date_str}.")
         return final_slots
 
     except Exception as e:
-        logging.exception(f"Erro inesperado no cálculo de slots (Híbrido):")
+        logging.exception(f"Erro CRÍTICO no cálculo de slots: {e}")
         return []
 
 # ----------------------------------------------------
