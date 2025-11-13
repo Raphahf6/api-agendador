@@ -919,6 +919,8 @@ async def get_client_details(client_id: str, current_user: dict = Depends(get_cu
         client_ref = db.collection('cabeleireiros').document(client_id); client_doc = client_ref.get()
         if not client_doc.exists: raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cliente não encontrado.")
         client_data = client_doc.to_dict()
+        if 'id' in client_data:
+            del client_data['id']
         services_ref = client_ref.collection('servicos').stream()
         services_list = [Service(id=doc.id, **doc.to_dict()) for doc in services_ref]
         client_details = ClientDetail(id=client_doc.id, servicos=services_list, **client_data) 
