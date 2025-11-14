@@ -82,6 +82,7 @@ class ClientDetail(BaseModel): # Admin (Painel)
     horario_fim: Optional[str] = None
     servicos: List[Service] = []
     url_logo: Optional[str] = None
+    setupCompleted: bool = False # <--- NOVO CAMPO
     
     # --- Cores e Branding ---
     cor_primaria: Optional[str] = None
@@ -129,6 +130,7 @@ class NewClientData(BaseModel):
     url_logo: Optional[str] = None
     cor_primaria: str = "#9daa9d" 
     cor_secundaria: str = "#FFFFFF"
+    setupCompleted: bool = False # <--- NOVO CAMPO
 
     @field_validator('numero_whatsapp', mode='after')
     @classmethod
