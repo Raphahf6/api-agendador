@@ -1425,10 +1425,9 @@ async def get_cliente_details_and_history(
 ):
     user_email = current_user.get("email")
     logging.info(f"Admin {user_email} buscando detalhes e timeline do cliente: {cliente_id}")
+    
     try:
-        timeline_items = []
-        
-        # 1. BUSCA DADOS DO CLIENTE (Mantido)
+        # 1. BUSCA DADOS DO CLIENTE
         cliente_doc_ref = db.collection('cabeleireiros').document(salao_id).collection('clientes').document(cliente_id)
         cliente_doc = cliente_doc_ref.get()
 
@@ -1436,43 +1435,88 @@ async def get_cliente_details_and_history(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Perfil do cliente não encontrado.")
         
         cliente_data = cliente_doc.to_dict()
+        cliente_data['id'] = cliente_doc.id # Garante o ID no objeto
+
+        # Pega o telefone do cadastro para a busca secundária
+        raw_phone = str(cliente_data.get('whatsapp', ''))
+        # Limpa o telefone (apenas números) para garantir o match
+        cliente_whatsapp_clean = re.sub(r'\D', '', raw_phone) if raw_phone else None
 
         # ----------------------------------------------------
-        # >>> NOVO PASSO: BUSCAR O NOME DO SALÃO <<<
+        # 2. BUSCA O NOME DO SALÃO
         # ----------------------------------------------------
         salon_doc_ref = db.collection('cabeleireiros').document(salao_id)
         salon_doc = salon_doc_ref.get()
-        
-        if not salon_doc.exists:
-            # Não é um erro crítico, mas precisamos de um nome para o frontend
-            salon_name = "Studio Horalis" 
-            logging.warning(f"Documento do salão {salao_id} não encontrado para obter o nome.")
-        else:
-            # Assumindo que o nome do salão está no campo 'nome_salao' do documento raiz
-            salon_name = salon_doc.get('nome_salao')
-        # ----------------------------------------------------
+        salon_name = salon_doc.to_dict().get('nome_salao', "Studio Horalis") if salon_doc.exists else "Studio Horalis"
 
-        # 2. BUSCA HISTÓRICO (Mantido)
+        # ----------------------------------------------------
+        # 3. BUSCA HISTÓRICO (ESTRATÉGIA DUPLA: ID + TELEFONE)
+        # ----------------------------------------------------
         agendamentos_ref = db.collection('cabeleireiros').document(salao_id).collection('agendamentos')
-        # ... (restante da lógica de timeline_items) ...
         
-        # 3. CONSTRÓI RESPOSTA
+        timeline_items = []
+        processed_ids = set() # Para evitar duplicatas
+
+        # A. Busca por ID do Cliente (Vínculo Forte)
+        query_id = agendamentos_ref.where(filter=FieldFilter("clienteId", "==", cliente_id))
+        docs_id = query_id.stream()
+
+        for doc in docs_id:
+            if doc.id not in processed_ids:
+                data = doc.to_dict()
+                # Garante datas em formato ISO para o Pydantic/Frontend
+                if data.get('startTime'): data['startTime'] = data['startTime'].isoformat()
+                if data.get('endTime'): data['endTime'] = data['endTime'].isoformat()
+                
+                # Define a data do evento para ordenação
+                event_date = data.get('createdAt') or data.get('startTime')
+                
+                timeline_items.append({
+                    "id": doc.id,
+                    "tipo": "Agendamento",
+                    "data_evento": event_date.isoformat() if event_date else None,
+                    "dados": data
+                })
+                processed_ids.add(doc.id)
+
+        # B. Busca por Telefone (Vínculo Fraco/Histórico Antigo)
+        if cliente_whatsapp_clean:
+            # Busca onde customerPhone é igual ao número limpo
+            query_phone = agendamentos_ref.where(filter=FieldFilter("customerPhone", "==", cliente_whatsapp_clean))
+            docs_phone = query_phone.stream()
+
+            for doc in docs_phone:
+                if doc.id not in processed_ids: # Só adiciona se não pegou na busca por ID
+                    data = doc.to_dict()
+                    if data.get('startTime'): data['startTime'] = data['startTime'].isoformat()
+                    if data.get('endTime'): data['endTime'] = data['endTime'].isoformat()
+                    
+                    event_date = data.get('createdAt') or data.get('startTime')
+
+                    timeline_items.append({
+                        "id": doc.id,
+                        "tipo": "Agendamento",
+                        "data_evento": event_date.isoformat() if event_date else None,
+                        "dados": data
+                    })
+                    processed_ids.add(doc.id)
+
+        # 4. ORDENAÇÃO (Mais recente primeiro)
+        timeline_items.sort(key=lambda x: x['data_evento'] or "", reverse=True)
+
         logging.info(f"Timeline de {len(timeline_items)} itens encontrada para o cliente {cliente_id}.")
 
         return ClienteDetailsResponse(
             cliente=cliente_data,
             historico_agendamentos=timeline_items,
-            # ----------------------------------------------------
-            # >>> INCLUSÃO DO NOME DO SALÃO NA RESPOSTA <<<
             salonName=salon_name 
-            # ----------------------------------------------------
         )
 
     except HTTPException as httpe: 
         raise httpe
     except Exception as e:
         logging.exception(f"Erro CRÍTICO ao buscar detalhes do cliente {cliente_id}: {e}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Erro interno.")
+        raise HTTPException(status_code=500, detail="Erro interno.")
 
 
 @router.post("/clientes/adicionar-nota", status_code=status.HTTP_201_CREATED, response_model=TimelineItem)
