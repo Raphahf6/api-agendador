@@ -13,25 +13,32 @@ except ImportError:
         logging.info("Usando 'pytz' como fallback para ZoneInfo.")
     except ImportError:
         logging.error("Nem 'zoneinfo' nem 'pytz' encontrados. A conversão de fuso horário falhará.")
-        ZoneInfo = lambda x: None
+        ZoneInfo = lambda x: None # Fallback seguro
 
 load_dotenv() 
 logging.basicConfig(level=logging.INFO)
+
+# 🌟 CORREÇÃO CRÍTICA: Inicialização do Resend com a Chave da API 🌟
+# (Certifique-se de que RESEND_API_KEY está no seu arquivo .env)
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
+if not RESEND_API_KEY:
+    logging.warning("RESEND_API_KEY não está configurada no .env! O envio de e-mails falhará.")
+else:
+    resend.api_key = RESEND_API_KEY
+    logging.info("Serviço de e-mail (Resend) inicializado.")
 
 try:
     TARGET_TZ = ZoneInfo("America/Sao_Paulo")
 except Exception:
     TARGET_TZ = None
 
-# Este é o e-mail REAL verificado no Resend. NÃO MUDE ISSO.
+# E-mail verificado no Resend
 SENDER_EMAIL_ADDRESS = "Agendamentos-Horalis@horalis.app"
-# URL Base do Frontend (para o link de agendamento)
 FRONTEND_BASE_URL = "https://horalis.app" 
 
 
 # --- Função HELPER INTERNA para formatar a hora ---
 def _format_time_to_brt(start_time_iso: str) -> str:
-    # ... (código idêntico) ...
     if not TARGET_TZ:
         return start_time_iso 
     try:
@@ -45,7 +52,6 @@ def _format_time_to_brt(start_time_iso: str) -> str:
 # --- Função HELPER INTERNA para o CSS Base ---
 def _get_base_css() -> str:
     """Retorna o CSS base para os e-mails dos clientes."""
-    # <<< MUDANÇA: Estilo de botão ajustado para o Ciano Horalis >>>
     return """
         body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #f4f4f4; color: #333; margin: 0; padding: 0; }
         .container { max-width: 600px; margin: 20px auto; background-color: #ffffff; padding: 30px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
@@ -80,18 +86,16 @@ def _get_footer_with_link(salao_id: str) -> str:
             Você pode acessar seu painel aqui: <a href="{FRONTEND_BASE_URL}/login" style="color: #0E7490;">{FRONTEND_BASE_URL}/login</a>
         </div>
     """
-# --- FIM DA FUNÇÃO HELPER ---
-
 
 # =========================================================================
-# === NOVO: FUNÇÃO 1: E-mail de Boas-Vindas e Confirmação de Cadastro ===
+# === FUNÇÃO 1: E-mail de Boas-Vindas (Trial) ===
 # =========================================================================
 
 def send_welcome_email_to_salon(
     salon_email: str, 
     salon_name: str, 
     salao_id: str,
-    login_email: str # Novo parâmetro para clareza
+    login_email: str 
 ) -> bool:
     """Envia um e-mail de boas-vindas e confirmação de ativação da conta."""
     
@@ -111,20 +115,20 @@ def send_welcome_email_to_salon(
     </head>
     <body>
         <div class="container">
-            <h1 style="color: #06b6d4;">Parabéns, sua conta Pro está ativa!</h1>
+            <h1 style="color: #06b6d4;">Parabéns, sua conta de Teste está ativa!</h1>
             <p>Olá, <strong>{salon_name}</strong>!</p>
-            <p>É um prazer tê-lo(a) a bordo. Seu pagamento de ativação foi confirmado, e agora você faz parte da comunidade Horalis Pro.</p>
+            <p>É um prazer tê-lo(a) a bordo. Seu período de 7 dias de teste gratuito começou.</p>
             
             <p>Aqui estão os dados da sua conta e os próximos passos:</p>
             
             <div class="detail" style="background-color: #e0f7fa; border-left: 5px solid #06b6d4;">
                 <strong>Seu ID de Login (WhatsApp):</strong> {salao_id}<br>
                 <strong>Seu E-mail de Notificação:</strong> {login_email}<br>
-                <strong>Plano:</strong> Horalis Pro (Teste Ativo)
+                <strong>Plano:</strong> Horalis Pro (Teste Gratuito)
             </div>
             
             <p style="margin-top: 20px; font-weight: bold;">
-                🎉 O primeiro passo é personalizar sua página de agendamento e sincronizar sua agenda!
+                🎉 O primeiro passo é personalizar sua página de agendamento!
             </p>
             
             <div style="text-align: center; margin: 30px 0;">
@@ -146,6 +150,7 @@ def send_welcome_email_to_salon(
     """
     
     try:
+        if not RESEND_API_KEY: raise Exception("Chave RESEND_API_KEY não configurada")
         result = resend.Emails.send({
             "from": from_address, 
             "to": [salon_email],
@@ -159,11 +164,8 @@ def send_welcome_email_to_salon(
         return False
 
 # =========================================================================
-# === FIM DA NOVA FUNÇÃO / REUTILIZAÇÃO DAS EXISTENTES ABAIXO ===
+# === FUNÇÃO 2: E-mail para o SALÃO (Novo Agendamento) ===
 # =========================================================================
-
-
-# --- FUNÇÃO 2: E-mail para o SALÃO (Agendamento) ---
 def send_confirmation_email_to_salon(
     salon_email: str, 
     salon_name: str, 
@@ -174,22 +176,16 @@ def send_confirmation_email_to_salon(
 ) -> bool:
     
     formatted_time = _format_time_to_brt(start_time_iso)
-    subject = f"✅ NOVO AGENDAMENTO para {salon_name}: {service_name} às {formatted_time}"
+    subject = f"✅ NOVO AGENDAMENTO: {service_name} às {formatted_time}"
     from_address = f"Horalis Agendamentos <{SENDER_EMAIL_ADDRESS}>"
     
     html_content = f"""
     <!DOCTYPE html>
     <html lang="pt-BR">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <style>
-            {_get_base_css()}
-        </style>
-    </head>
+    <head><style>{_get_base_css()}</style></head>
     <body>
         <div class="container">
-            <h1>Confirmação de Agendamento - Horalis</h1>
+            <h1>Novo Agendamento - Horalis</h1>
             <p>Olá, <strong>{salon_name}</strong>!</p>
             <p>Um novo serviço foi agendado em sua agenda:</p>
             
@@ -202,14 +198,12 @@ def send_confirmation_email_to_salon(
             
             <p style="margin-top: 20px;">Lembre-se de checar sua agenda Horalis para todos os detalhes.</p>
         </div>
-        <div class="footer">
-            Este e-mail foi enviado automaticamente pelo sistema Horalis.
-        </div>
     </body>
     </html>
     """
     
     try:
+        if not RESEND_API_KEY: raise Exception("Chave RESEND_API_KEY não configurada")
         result = resend.Emails.send({
             "from": from_address, 
             "to": [salon_email],
@@ -223,8 +217,79 @@ def send_confirmation_email_to_salon(
         logging.error(f"ERRO RESEND: Falha ao enviar e-mail (para SALÃO) {salon_email}: {e}")
         return False
 
+# =========================================================================
+# === 🌟 NOVA FUNÇÃO 3: E-mail para o PROFISSIONAL (Novo Agendamento) 🌟 ===
+# =========================================================================
+def send_new_appointment_email_to_professional(
+    pro_email: str,
+    pro_name: str,
+    customer_name: str,
+    customer_phone: str,
+    service_name: str,
+    start_time_iso: str,
+    salon_name: str
+) -> bool:
+    """
+    Envia notificação para o profissional sobre um novo agendamento.
+    """
+    
+    formatted_time = _format_time_to_brt(start_time_iso)
+    subject = f"📅 Novo Agendamento: {customer_name} às {formatted_time}"
+    # O e-mail é enviado "em nome" do salão
+    from_address = f"{salon_name} <{SENDER_EMAIL_ADDRESS}>"
 
-# --- FUNÇÃO 3: E-mail de Confirmação para o CLIENTE ---
+    html_content = f"""
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+        <meta charset="UTF-8">
+        <style>
+            {_get_base_css()}
+            /* Um leve toque de cor diferente para o profissional */
+            h1 {{ color: #0891B2; }} 
+            .detail {{ background-color: #f0f9ff; border-left: 5px solid #0891B2; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Novo Agendamento</h1>
+            <p>Olá, <strong>{pro_name}</strong>!</p>
+            <p>Um novo agendamento foi atribuído a você no(a) <strong>{salon_name}</strong>:</p>
+            
+            <div class="detail">
+                <strong>Cliente:</strong> {customer_name}<br>
+                <strong>Telefone:</strong> {customer_phone}<br>
+                <strong>Serviço:</strong> {service_name}<br>
+                <strong>Data e Hora:</strong> {formatted_time}
+            </div>
+            
+            <p style="margin-top: 20px;">Por favor, verifique sua agenda no painel Horalis.</p>
+            
+            <div class="footer">
+                Enviado automaticamente por Horalis.
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+    
+    try:
+        if not RESEND_API_KEY: raise Exception("Chave RESEND_API_KEY não configurada")
+        result = resend.Emails.send({
+            "from": from_address,
+            "to": [pro_email],
+            "subject": subject,
+            "html": html_content,
+        })
+        logging.info(f"E-mail de NOTIFICAÇÃO (para PROFISSIONAL) enviado com sucesso para {pro_email}.")
+        return True
+    except Exception as e:
+        logging.error(f"ERRO RESEND: Falha ao enviar e-mail (para PROFISSIONAL) {pro_email}: {e}")
+        return False
+
+# =========================================================================
+# === FUNÇÃO 4: E-mail de Confirmação para o CLIENTE ===
+# =========================================================================
 def send_confirmation_email_to_customer(
     customer_email: str,
     customer_name: str,
@@ -241,13 +306,7 @@ def send_confirmation_email_to_customer(
     html_content = f"""
     <!DOCTYPE html>
     <html lang="pt-BR">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <style>
-            {_get_base_css()}
-        </style>
-    </head>
+    <head><style>{_get_base_css()}</style></head>
     <body>
         <div class="container">
             <h1>Agendamento Confirmado!</h1>
@@ -268,6 +327,7 @@ def send_confirmation_email_to_customer(
     """
     
     try:
+        if not RESEND_API_KEY: raise Exception("Chave RESEND_API_KEY não configurada")
         result = resend.Emails.send({
             "from": from_address,
             "to": [customer_email],
@@ -280,14 +340,10 @@ def send_confirmation_email_to_customer(
         logging.error(f"ERRO RESEND: Falha ao enviar e-mail (para CLIENTE) {customer_email}: {e}")
         return False
 
-# --- FUNÇÃO 4: E-mail de Cancelamento para o CLIENTE ---
+# --- FUNÇÃO 5: E-mail de Cancelamento para o CLIENTE ---
 def send_cancellation_email_to_customer(
-    customer_email: str,
-    customer_name: str,
-    service_name: str,
-    start_time_iso: str, 
-    salon_name: str,
-    salao_id: str
+    customer_email: str, customer_name: str, service_name: str,
+    start_time_iso: str, salon_name: str, salao_id: str
 ) -> bool:
     
     formatted_time = _format_time_to_brt(start_time_iso)
@@ -299,7 +355,6 @@ def send_cancellation_email_to_customer(
     <html lang="pt-BR">
     <head>
         <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
             {_get_base_css()}
             h1 {{ color: #D32F2F; }}
@@ -326,11 +381,9 @@ def send_cancellation_email_to_customer(
     """
     
     try:
+        if not RESEND_API_KEY: raise Exception("Chave RESEND_API_KEY não configurada")
         result = resend.Emails.send({
-            "from": from_address,
-            "to": [customer_email],
-            "subject": subject,
-            "html": html_content,
+            "from": from_address, "to": [customer_email], "subject": subject, "html": html_content,
         })
         logging.info(f"E-mail de CANCELAMENTO (para CLIENTE) enviado com sucesso para {customer_email}.")
         return True
@@ -338,14 +391,10 @@ def send_cancellation_email_to_customer(
         logging.error(f"ERRO RESEND: Falha ao enviar e-mail de CANCELAMENTO (para CLIENTE) {customer_email}: {e}")
         return False
 
-# --- FUNÇÃO 5: E-mail de Reagendamento para o CLIENTE ---
+# --- FUNÇÃO 6: E-mail de Reagendamento para o CLIENTE ---
 def send_reschedule_email_to_customer(
-    customer_email: str,
-    customer_name: str,
-    service_name: str,
-    salon_name: str,
-    old_start_time_iso: str,
-    new_start_time_iso: str,
+    customer_email: str, customer_name: str, service_name: str,
+    salon_name: str, old_start_time_iso: str, new_start_time_iso: str,
     salao_id: str
 ) -> bool:
     
@@ -359,7 +408,6 @@ def send_reschedule_email_to_customer(
     <html lang="pt-BR">
     <head>
         <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
             {_get_base_css()}
             h1 {{ color: #303F9F; }}
@@ -393,11 +441,9 @@ def send_reschedule_email_to_customer(
     """
     
     try:
+        if not RESEND_API_KEY: raise Exception("Chave RESEND_API_KEY não configurada")
         result = resend.Emails.send({
-            "from": from_address,
-            "to": [customer_email],
-            "subject": subject,
-            "html": html_content,
+            "from": from_address, "to": [customer_email], "subject": subject, "html": html_content,
         })
         logging.info(f"E-mail de REAGENDAMENTO (para CLIENTE) enviado com sucesso para {customer_email}.")
         return True
@@ -405,14 +451,10 @@ def send_reschedule_email_to_customer(
         logging.error(f"ERRO RESEND: Falha ao enviar e-mail de REAGENDAMENTO (para CLIENTE) {customer_email}: {e}")
         return False
 
-# --- FUNÇÃO 6: E-mail de Lembrete para o CLIENTE ---
+# --- FUNÇÃO 7: E-mail de Lembrete para o CLIENTE ---
 def send_reminder_email_to_customer(
-    customer_email: str,
-    customer_name: str,
-    service_name: str,
-    start_time_iso: str,
-    salon_name: str,
-    salao_id: str
+    customer_email: str, customer_name: str, service_name: str,
+    start_time_iso: str, salon_name: str, salao_id: str
 ) -> bool:
     
     formatted_time = _format_time_to_brt(start_time_iso)
@@ -424,7 +466,6 @@ def send_reminder_email_to_customer(
     <html lang="pt-BR">
     <head>
         <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
             {_get_base_css()}
             h1 {{ color: #FFA000; }}
@@ -442,7 +483,7 @@ def send_reminder_email_to_customer(
                 <strong>Horário:</strong> {formatted_time}<br>
             </div>
             
-            <p style="margin-top: 20px;">Esperamos por você! Caso precise cancelar ou reagendar, por favor, entre em contato diretamente com o estabelecimento o quanto antes.</p>
+            <p style="margin-top: 20px;">Esperamos por você!</p>
             
             {_get_footer_with_link(salao_id)}
         </div>
@@ -451,11 +492,9 @@ def send_reminder_email_to_customer(
     """
     
     try:
+        if not RESEND_API_KEY: raise Exception("Chave RESEND_API_KEY não configurada")
         result = resend.Emails.send({
-            "from": from_address,
-            "to": [customer_email],
-            "subject": subject,
-            "html": html_content,
+            "from": from_address, "to": [customer_email], "subject": subject, "html": html_content,
         })
         logging.info(f"E-mail de LEMBRETE (para CLIENTE) enviado com sucesso para {customer_email}.")
         return True
@@ -463,14 +502,10 @@ def send_reminder_email_to_customer(
         logging.error(f"ERRO RESEND: Falha ao enviar e-mail de LEMBRETE (para CLIENTE) {customer_email}: {e}")
         return False
         
-# --- FUNÇÃO 7: E-mail Promocional/Personalizado ---
+# --- FUNÇÃO 8: E-mail Promocional/Personalizado ---
 def send_promotional_email_to_customer(
-    customer_email: str,
-    customer_name: str,
-    salon_name: str,
-    custom_subject: str,
-    custom_message_html: str,
-    salao_id: str
+    customer_email: str, customer_name: str, salon_name: str,
+    custom_subject: str, custom_message_html: str, salao_id: str
 ) -> bool:
     
     subject = f"{custom_subject} - Exclusivo {salon_name}"
@@ -481,7 +516,6 @@ def send_promotional_email_to_customer(
     <html lang="pt-BR">
     <head>
         <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
             {_get_base_css()}
             h1 {{ color: #E91E63; }}
@@ -507,11 +541,9 @@ def send_promotional_email_to_customer(
     """
     
     try:
+        if not RESEND_API_KEY: raise Exception("Chave RESEND_API_KEY não configurada")
         result = resend.Emails.send({
-            "from": from_address,
-            "to": [customer_email],
-            "subject": subject,
-            "html": html_content,
+            "from": from_address, "to": [customer_email], "subject": subject, "html": html_content,
         })
         logging.info(f"E-mail PROMOCIONAL (de {salon_name}) enviado com sucesso para {customer_email}.")
         return True

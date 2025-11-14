@@ -31,6 +31,8 @@ class Professional(BaseModel):
     ativo: bool = True
     horario_trabalho: Optional[Dict[str, Any]] = None
     servicos: List[str] = []
+    email: Optional[EmailStr] = None
+    telefone: Optional[str] = None
     
 class SalonPublicDetails(BaseModel):
     # --- Campos Core & Cores ---

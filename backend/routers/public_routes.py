@@ -112,6 +112,32 @@ def check_and_update_cliente_profile(salao_id: str, appointment_data) -> str:
         new_ref = clientes_ref.document()
         new_ref.set(new_client_data)
         return new_ref.id
+    
+# Função auxiliar para notificar profissional
+def notify_professional_if_assigned(salao_id: str, professional_id: str, appointment_data: dict, salon_name: str):
+    if not professional_id: return
+
+    try:
+        # Busca o profissional no banco para pegar o e-mail
+        pro_doc = db.collection('cabeleireiros').document(salao_id).collection('profissionais').document(professional_id).get()
+        
+        if pro_doc.exists:
+            pro_data = pro_doc.to_dict()
+            pro_email = pro_data.get('email')
+            pro_name = pro_data.get('nome', 'Profissional')
+            
+            if pro_email:
+                email_service.send_new_appointment_email_to_professional(
+                    pro_email=pro_email,
+                    pro_name=pro_name,
+                    customer_name=appointment_data['customerName'],
+                    customer_phone=appointment_data['customerPhone'],
+                    service_name=appointment_data['serviceName'],
+                    start_time_iso=appointment_data['startTime'].isoformat(),
+                    salon_name=salon_name
+                )
+    except Exception as e:
+        logging.error(f"Falha ao notificar profissional: {e}")
 
 # --- ROTAS ---
 
@@ -273,6 +299,15 @@ async def create_appointment(appointment: Appointment):
                 email_service.send_confirmation_email_to_salon(salon_email_destino, salon_name, appointment.customer_name, appointment.customer_phone, svc_display, appointment.start_time)
             if appointment.customer_email:
                 email_service.send_confirmation_email_to_customer(appointment.customer_email, appointment.customer_name, svc_display, appointment.start_time, salon_name, salao_id)
+                
+            if appointment.professional_id: # ou payload.professional_id na rota com pagamento
+             # No caso da rota com pagamento, certifique-se que o status é 'confirmado' ou 'approved'
+             notify_professional_if_assigned(
+                 salao_id, 
+                 appointment.professional_id, # ou payload.professional_id 
+                 agendamento_data, 
+                 salon_name
+             )
         except Exception as e:
             logging.error(f"Erro ao enviar e-mails: {e}")
 
@@ -478,9 +513,22 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
                     if salon_data.get("google_sync_enabled") and salon_data.get("google_refresh_token"):
                         # ... (lógica do google sync mantida) ...
                         pass
+                    
+                    if payload.professional_id: # ou payload.professional_id na rota com pagamento
+                    # No caso da rota com pagamento, certifique-se que o status é 'confirmado' ou 'approved'
+                        notify_professional_if_assigned(
+                            salao_id, 
+                            payload.professional_id, # ou payload.professional_id 
+                            agendamento_data, 
+                            salon_name
+                        )
+                    
 
                 except Exception as e:
                     logging.error(f"Sinal pago, mas falha nas integrações: {e}")
+                    
+                    
+                    
                 
                 return {"status": "approved", "message": "Pagamento aprovado e agendamento confirmado!"}
             
