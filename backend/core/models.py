@@ -33,6 +33,7 @@ class Professional(BaseModel):
     servicos: List[str] = []
     email: Optional[EmailStr] = None
     telefone: Optional[str] = None
+    descricao: Optional[str] = Field(None, description="Breve biografia ou especialidades.")
     
 class SalonPublicDetails(BaseModel):
     # --- Campos Core & Cores ---
