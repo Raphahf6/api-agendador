@@ -1,10 +1,9 @@
-# backend/core/models.py
-from pydantic import BaseModel, Field, EmailStr,field_validator
+from pydantic import BaseModel, Field, EmailStr, field_validator
 from typing import List, Optional, Any, Dict
 from datetime import datetime
 from uuid import UUID 
 
-# --- Modelos de Serviço e Salão (Existentes) ---
+# --- Modelos de Serviço e Salão ---
 class Service(BaseModel):
     id: Optional[str] = None
     nome_servico: str
@@ -23,8 +22,13 @@ class DailySchedule(BaseModel):
     lunchStart: Optional[str] = Field(None, description="Início do almoço (HH:MM).")
     lunchEnd: Optional[str] = Field(None, description="Fim do almoço (HH:MM).")
 
-# --- NOVO MODELO 2: Estrutura para os Dados de Serviço (Apenas para evitar erro no ClientDetail) ---
-# Se Service não estiver definido, você precisará defini-lo (usando o seu modelo real)
+# --- NOVO MODELO: Profissional (Equipe) ---
+class Professional(BaseModel):
+    id: Optional[str] = None
+    nome: str
+    cargo: str = "Profissional" # ex: Barbeiro, Manicure
+    foto_url: Optional[str] = None
+    ativo: bool = True
 
 class SalonPublicDetails(BaseModel):
     # --- Campos Core & Cores ---
@@ -35,14 +39,9 @@ class SalonPublicDetails(BaseModel):
     cor_secundaria: str = "#FFFFFF"
     
     # --- Mapeamento de Campos de Conteúdo (Microsite) ---
-    
-    # Mapeado de 'numero_whatsapp' no Firebase
     telefone: Optional[str] = Field(None, description="Número de contato principal (WhatsApp).") 
-    
-    # Estrutura do horário de trabalho detalhado do Firebase
     horario_trabalho_detalhado: Dict[str, Dict[str, Any]] = Field({}, description="Agenda detalhada (segunda, terça, etc).")
     
-    # 🚨 CAMPOS FALTANDO NO FIREBASE ATUALMENTE (Mantidos como default para não quebrar)
     endereco_completo: Optional[str] = Field(None, description="Endereço completo para exibição.")
     formas_pagamento: Optional[str] = Field(None, description="Formas de pagamento aceitas pelo salão.")
     fotos_carousel: List[Dict[str, str]] = Field([], description="Imagens para o carrossel.")
@@ -51,13 +50,14 @@ class SalonPublicDetails(BaseModel):
     
     # --- Campos do Agendamento/Pagamento ---
     servicos: List[Any] = Field([], description="Lista de serviços disponíveis.")
+    
+    # 🌟 ATUALIZADO: Lista de Profissionais para o Microsite 🌟
+    profissionais: List[Professional] = Field([], description="Lista de profissionais da equipe.")
+    
     mp_public_key: Optional[str] = None
     sinal_valor: Optional[float] = 0.0
 
     class Config:
-        # Permite que o Pydantic mapeie o campo 'numero_whatsapp' (do DB) para 'telefone' (do Modelo)
-        # Se você fizer a renomeação no Python antes de criar a instância, isso não é necessário.
-        # Ex: db_data['telefone'] = db_data.pop('numero_whatsapp')
         populate_by_name = True
     
 class OwnerRegisterRequest(BaseModel):
@@ -65,9 +65,9 @@ class OwnerRegisterRequest(BaseModel):
     whatsapp: str
     email: EmailStr
     cpf: str
-    uid: str  # UID que veio do Firebase Auth no Frontend
+    uid: str  
     
-class ClientDetail(BaseModel): # Admin
+class ClientDetail(BaseModel): # Admin (Painel)
     id: str
     nome_salao: str
     tagline: Optional[str] = None
@@ -83,7 +83,7 @@ class ClientDetail(BaseModel): # Admin
     cor_secundaria: Optional[str] = None
     cor_gradiente_inicio: Optional[str] = None
     cor_gradiente_fim: Optional[str] = None
-    email_footer_message: Optional[str] = None # <--- NOVO: Mensagem de rodapé
+    email_footer_message: Optional[str] = None 
     
     # --- Assinatura e Marketing ---
     subscriptionStatus: Optional[str] = None
@@ -102,47 +102,20 @@ class ClientDetail(BaseModel): # Admin
         description="Estrutura detalhada de horários de funcionamento por dia, incluindo almoço."
     )
 
-    # =================================================================
-    # 🌟 NOVOS CAMPOS PARA O MICROSITE (Adicione estes) 🌟
-    # =================================================================
-    
-    # Contato e Localização
+    # --- Novos Campos Microsite (Admin) ---
     telefone: Optional[str] = Field(None, description="WhatsApp/Telefone principal.")
     endereco_completo: Optional[str] = Field(None, description="Endereço completo para o mapa.")
-    
-    # Redes Sociais (Ex: {'instagram': '...', 'facebook': '...'})
-    redes_sociais: Optional[Dict[str, Optional[str]]] = Field(
-        default_factory=dict, 
-        description="Links para redes sociais."
-    )
-    
-    # Comodidades (Ex: {'wifi': True, 'estacionamento': False})
-    comodidades: Optional[Dict[str, bool]] = Field(
-        default_factory=dict, 
-        description="Lista de comodidades (booleans)."
-    )
-    
-    # Formas de Pagamento (Texto livre ou lista)
+    redes_sociais: Optional[Dict[str, Optional[str]]] = Field(default_factory=dict)
+    comodidades: Optional[Dict[str, bool]] = Field(default_factory=dict)
     formas_pagamento: Optional[str] = Field(None, description="Texto descrevendo formas de pagamento.")
-    
-    # Galeria de Fotos (Lista de objetos com URL)
-    # Ex: [{'url': 'https://...', 'alt': 'Fachada'}]
-    fotos_carousel: Optional[List[Dict[str, str]]] = Field(
-        default_factory=list, 
-        description="Lista de fotos para o carrossel do microsite."
-    )
+    fotos_carousel: Optional[List[Dict[str, str]]] = Field(default_factory=list)
 
     class Config:
-        # Permite que o modelo ignore campos extras se o front mandar algo a mais,
-        # mas ACEITE os campos definidos acima.
         extra = "ignore"
 
 class NewClientData(BaseModel):
-    """Modelo para validação e criação de dados de um novo salão/cliente."""
-
     nome_salao: str
-    # O padrão (pattern) continua exigindo o '+' para garantir o formato de entrada correto
-    numero_whatsapp: str = Field(..., pattern=r"^\+55\d{10,11}$", description="Número de WhatsApp com DDI +55 e DDD (10 ou 11 dígitos no total).")
+    numero_whatsapp: str = Field(..., pattern=r"^\+55\d{10,11}$")
     calendar_id: str
     tagline: str = "Bem-vindo(a) ao seu Horalis!"
     dias_trabalho: List[str] = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday']
@@ -152,22 +125,15 @@ class NewClientData(BaseModel):
     cor_primaria: str = "#9daa9d" 
     cor_secundaria: str = "#FFFFFF"
 
-    # NOVO VALIDATOR: Executa após a validação do formato (pattern)
     @field_validator('numero_whatsapp', mode='after')
     @classmethod
     def strip_plus_sign_for_storage(cls, value: str) -> str:
-        """Remove o sinal de '+' do número após a validação do formato ser concluída.
-        O valor salvo no modelo será '5511...'."""
-        
-        # Como o pattern garante que o '+' é o primeiro caractere, podemos removê-lo.
         if value.startswith('+'):
-            return value[1:] # Retorna a string a partir do segundo caractere
-        
-        # Caso o pattern fosse mais flexível (o que não é o caso aqui), manteríamos o valor
+            return value[1:] 
         return value
     
 
-# --- Modelo de Agendamento Público (Existente) ---
+# --- 🌟 ATUALIZADO: Modelo de Agendamento Público 🌟 ---
 class Appointment(BaseModel):
     salao_id: str
     service_id: str
@@ -176,8 +142,12 @@ class Appointment(BaseModel):
     customer_email: str = Field(..., pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
     customer_phone: str = Field(..., pattern=r"^(?:\+55)?\d{10,11}$")
     cliente_id: Optional[str] = None
+    
+    # NOVOS CAMPOS (Opcionais para compatibilidade)
+    professional_id: Optional[str] = None
+    professional_name: Optional[str] = None
 
-# --- Modelo de Agendamento Manual (Existente) ---
+# --- Modelo de Agendamento Manual ---
 class ManualAppointmentData(BaseModel):
     salao_id: str
     start_time: str 
@@ -189,9 +159,9 @@ class ManualAppointmentData(BaseModel):
     service_id: Optional[str] = None
     service_price:Optional[float] = None
     cliente_id: Optional[str] = None
+    # Opcional: Adicionar professional_id aqui também se quiser agendamento manual por profissional no futuro
 
-
-# --- <<< MODELOS NOVOS (Movidos do admin_routes.py) >>> ---
+# --- OUTROS MODELOS DE SUPORTE ---
 
 class Cliente(BaseModel):
     id: Optional[str] = None 
@@ -278,7 +248,7 @@ class DashboardDataResponse(BaseModel):
     agendamentos_foco_valor: int
     novos_clientes_valor: int
     receita_estimada: str
-    chart_data: List[Dict[str, Any]] # Alterado para Dict genérico
+    chart_data: List[Dict[str, Any]] 
 
 class MarketingMassaBody(BaseModel):
     salao_id: str
@@ -286,37 +256,30 @@ class MarketingMassaBody(BaseModel):
     message: str = Field(..., min_length=10)
     segmento: str = "todos"
     
-    
+# 🌟 ATUALIZADO: Modelo de Pagamento com Agendamento 🌟
 class AppointmentPaymentPayload(BaseModel):
-    # Dados do Agendamento (do formulário)
+    # Dados do Agendamento
     salao_id: str
     service_id: str
-    start_time: str # Formato ISO
+    start_time: str 
     customer_name: str = Field(..., min_length=2)
     customer_email: str = Field(..., pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
     customer_phone: str = Field(..., pattern=r"^(?:\+55)?\d{10,11}$")
     device_session_id: Optional[str] = None
     
-    # Dados do Pagamento (do Brick)
+    # 🌟 NOVOS CAMPOS 🌟
+    professional_id: Optional[str] = None
+    professional_name: Optional[str] = None
+    
+    # Dados do Pagamento
     token: Optional[str] = None
     issuer_id: Optional[str] = None
     payment_method_id: str
-    transaction_amount: float # Valor do SINAL
+    transaction_amount: float 
     installments: Optional[int] = None
     payer: PayerData
     device_id: Optional[str] = None 
     
 class PagamentoSettingsBody(BaseModel):
-    # Nota: Não precisamos mais do mp_public_key aqui, pois o OAuth já o salva.
-    # Mas vamos mantê-lo para a UX do admin, se ele quiser digitá-lo manualmente como fallback.
     mp_public_key: Optional[str] = None
     sinal_valor: Optional[float] = 0.0
-    
-    
-class Professional(BaseModel):
-    id: Optional[str] = None
-    nome: str
-    cargo: str = "Profissional" # ex: Barbeiro, Manicure
-    foto_url: Optional[str] = None
-    ativo: bool = True
-    # Futuro: dias_trabalho, servicos_habilitados, etc.
