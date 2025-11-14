@@ -43,6 +43,10 @@ except Exception as e:
     sdk = None
     mp_payment_client = None
 # --- FIM DA ADIÇÃO ---
+def normalize_phone(phone: str) -> str:
+    """Remove tudo que não é dígito para garantir buscas precisas no banco."""
+    if not phone: return ""
+    return re.sub(r'\D', '', phone)
 
 def is_conflict_with_lunch(
     booking_start_dt: datetime, 
@@ -111,55 +115,61 @@ def is_conflict_with_lunch(
         # Aqui retornamos False para não travar o agendamento por erro de código, mas logamos o erro.
         return False
 # --- Função Utility para o CRM ---
-def check_and_update_cliente_profile(
-    salao_id: str, 
-    appointment_data: (Appointment | AppointmentPaymentPayload) 
-) -> Optional[str]:
-    
-    cliente_email = appointment_data.customer_email.strip()
-    cliente_whatsapp = appointment_data.customer_phone
-    
-    clientes_subcollection = db.collection('cabeleireiros').document(salao_id).collection('clientes')
+def check_and_update_cliente_profile(salao_id: str, appointment_data) -> str:
+    """
+    Busca o cliente pelo telefone (chave única mais confiável) ou email.
+    Se não existir, CRIA um perfil completo.
+    Se existir, ATUALIZA a última visita e estatísticas.
+    """
+    # Normaliza dados
+    phone_raw = appointment_data.customer_phone
+    phone_clean = normalize_phone(phone_raw)
+    email_clean = appointment_data.customer_email.strip().lower() if appointment_data.customer_email else None
+    name_clean = appointment_data.customer_name.strip()
 
-    query_email = clientes_subcollection.where(filter=FieldFilter("email", "==", cliente_email)).limit(1).stream()
-    cliente_doc = next(query_email, None)
+    clientes_ref = db.collection('cabeleireiros').document(salao_id).collection('clientes')
+    cliente_doc = None
 
-    if not cliente_doc:
-        query_whatsapp = clientes_subcollection.where(filter=FieldFilter("whatsapp", "==", cliente_whatsapp)).limit(1).stream()
-        cliente_doc = next(query_whatsapp, None)
+    # 1. Tenta achar pelo telefone (Prioridade)
+    if phone_clean:
+        query_phone = clientes_ref.where(filter=FieldFilter("whatsapp", "==", phone_clean)).limit(1).stream()
+        cliente_doc = next(query_phone, None)
+
+    # 2. Se não achou e tem email, tenta pelo email
+    if not cliente_doc and email_clean:
+        query_email = clientes_ref.where(filter=FieldFilter("email", "==", email_clean)).limit(1).stream()
+        cliente_doc = next(query_email, None)
+
+    now = firestore.SERVER_TIMESTAMP
 
     if cliente_doc:
+        # --- CLIENTE EXISTENTE: Atualiza ---
         cliente_id = cliente_doc.id
-        logging.info(f"Cliente existente encontrado (ID: {cliente_id}). Atualizando visita.")
-        try:
-            cliente_doc.reference.update({
-                "ultima_visita": firestore.SERVER_TIMESTAMP
-            })
-            return cliente_id
-        except Exception as e:
-            logging.error(f"Falha ao atualizar última visita do cliente {cliente_id}: {e}")
-            return cliente_id
+        logging.info(f"CRM: Cliente recorrente identificado ({cliente_id}). Atualizando estatísticas.")
+        
+        update_data = {"ultima_visita": now}
+        # Se o cliente antigo não tinha nome ou email e agora forneceu, atualizamos
+        current_data = cliente_doc.to_dict()
+        if not current_data.get('email') and email_clean: update_data['email'] = email_clean
+        if not current_data.get('nome') and name_clean: update_data['nome'] = name_clean
+        
+        cliente_doc.reference.update(update_data)
+        return cliente_id
     else:
-        try:
-            logging.info(f"Cliente novo. Criando perfil CRM para {cliente_email}.")
-            novo_cliente_data = {
-                "profissional_id": salao_id,
-                "nome": appointment_data.customer_name.strip(),
-                "email": cliente_email,
-                "whatsapp": cliente_whatsapp,
-                "data_cadastro": firestore.SERVER_TIMESTAMP,
-                "ultima_visita": firestore.SERVER_TIMESTAMP,
-            }
-            
-            novo_cliente_ref = clientes_subcollection.document()
-            novo_cliente_ref.set(novo_cliente_data)
-            
-            logging.info(f"Novo perfil de cliente CRM criado: {novo_cliente_ref.id}")
-            return novo_cliente_ref.id
-
-        except Exception as e:
-            logging.error(f"Falha CRÍTICA ao criar novo perfil de cliente: {e}")
-            return None
+        # --- CLIENTE NOVO: Cria Perfil ---
+        logging.info(f"CRM: Novo cliente detectado. Criando perfil para {name_clean}.")
+        new_client_data = {
+            "nome": name_clean,
+            "whatsapp": phone_clean, # Salva sempre limpo
+            "email": email_clean,
+            "data_cadastro": now,
+            "ultima_visita": now,
+            "total_gasto": 0.0, # Inicializa métricas (opcional, mas bom para queries rápidas)
+            "total_visitas": 0
+        }
+        new_ref = clientes_ref.document()
+        new_ref.set(new_client_data)
+        return new_ref.id
 # --- FIM DA FUNÇÃO UTILITY ---
 
 
@@ -250,6 +260,10 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
     
     salao_id = payload.salao_id
     service_id = payload.service_id
+    
+    # Normalização do telefone para garantir consistência no CRM
+    phone_clean = normalize_phone(payload.customer_phone)
+    
     logging.info(f"Cliente '{payload.customer_name}' iniciando pagamento de sinal para salão {salao_id}")
 
     agendamento_ref = None 
@@ -266,7 +280,7 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
             logging.error(f"Salão {salao_id} tentou pagamento, mas mp_access_token não está configurado.")
             raise HTTPException(status_code=403, detail="O pagamento online não está configurado para este salão.")
 
-        # Instanciação Corrigida do Mercado Pago (Utilizando o token de acesso do Salão)
+        # Instanciação do Mercado Pago com o token do Salão
         mp_client_do_salao = mercadopago.SDK(salon_access_token)
         mp_client_do_salao_payment = mp_client_do_salao.payment()
         # -----------------------------------------------
@@ -275,22 +289,24 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
         if not service_info:
             raise HTTPException(status_code=404, detail="Serviço não selecionado ou inválido.")
 
+        # --- 2. Snapshot dos Dados (CRUCIAL) ---
         duration = service_info.get('duracao_minutos')
         service_name = service_info.get('nome_servico')
         salon_name = salon_data.get('nome_salao')
         salon_email_destino = salon_data.get('calendar_id') 
-        service_price = service_info.get('preco')
+        # Garante float para cálculos
+        service_price = float(service_info.get('preco', 0.0)) 
         
         # BUSCA VALOR DO SINAL DO DB (SEGURANÇA)
-        sinal_valor_backend = salon_data.get('sinal_valor', 0.0)
-        payload.transaction_amount = sinal_valor_backend # Usa o valor do backend
+        sinal_valor_backend = float(salon_data.get('sinal_valor', 0.0))
+        payload.transaction_amount = sinal_valor_backend # Sobrescreve o valor do payload pelo do banco
 
         if duration is None or service_name is None:
             raise HTTPException(status_code=500, detail="Dados do serviço incompletos.")
             
         start_time_dt = datetime.fromisoformat(payload.start_time)
         
-        # --- 2. VERIFICAÇÃO DE HORÁRIO DISPONÍVEL ---
+        # --- 3. VERIFICAÇÃO DE HORÁRIO DISPONÍVEL ---
         is_free = calendar_service.is_slot_available(
             salao_id=salao_id, salon_data=salon_data,
             new_start_dt=start_time_dt, duration_minutes=duration,
@@ -299,25 +315,37 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
         if not is_free:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Este horário não está mais disponível. Por favor, escolha outro.")
             
-        # -------------------------------------------------------------------------
-        # >>> INCLUSÃO DA VALIDAÇÃO DE ALMOÇO <<<
-        # -------------------------------------------------------------------------
+        # --- 4. VERIFICAÇÃO DE ALMOÇO ---
         if is_conflict_with_lunch(start_time_dt, duration, salon_data):
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="O horário de agendamento conflita com o horário de almoço do salão. Por favor, escolha outro slot.")
-        # -------------------------------------------------------------------------
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="O horário de agendamento conflita com o horário de almoço do salão.")
 
-        # --- 3. Checagem/Criação de Cliente (CRM) ---
+        # --- 5. Checagem/Criação de Cliente (CRM) ---
         cliente_id = check_and_update_cliente_profile(salao_id, payload)
 
-        # --- 4. LÓGICA DE SALVAMENTO (PENDENTE) ---
+        # --- 6. SALVAMENTO DO AGENDAMENTO (PENDENTE) ---
         end_time_dt = start_time_dt + timedelta(minutes=duration)
+        
         agendamento_data = {
-            "salaoId": salao_id, "serviceId": service_id, "serviceName": service_name, "salonName": salon_name,
-            "customerName": payload.customer_name.strip(), "customerEmail": payload.customer_email.strip(), 
-            "customerPhone": payload.customer_phone, "startTime": start_time_dt, 
-            "endTime": end_time_dt, "durationMinutes": duration, "servicePrice": service_price,
-            "status": "pending_payment", "createdAt": firestore.SERVER_TIMESTAMP,
-            "reminderSent": False, "clienteId": cliente_id 
+            "salaoId": salao_id,
+            "clienteId": cliente_id, # Vínculo CRM
+            
+            "customerName": payload.customer_name.strip(),
+            "customerPhone": phone_clean, # Salva limpo
+            "customerEmail": payload.customer_email.strip(),
+            
+            # Snapshot Financeiro
+            "serviceId": service_id,
+            "serviceName": service_name,
+            "servicePrice": service_price, 
+            "sinalValor": sinal_valor_backend,
+            "durationMinutes": duration,
+            
+            "startTime": start_time_dt,
+            "endTime": end_time_dt,
+            "status": "pending_payment", # Aguardando pagamento
+            "createdAt": firestore.SERVER_TIMESTAMP,
+            "paymentStatus": "pending",
+            "channel": "site"
         }
         
         # O agendamento TEMPORÁRIO é criado aqui
@@ -325,7 +353,7 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
         agendamento_ref.set(agendamento_data)
         logging.info(f"Agendamento 'pending_payment' salvo no Firestore com ID: {agendamento_ref.id}")
 
-        # --- 5. Processar o Pagamento ---
+        # --- 7. Processar o Pagamento no Mercado Pago ---
         notification_url = f"{RENDER_API_URL}/webhooks/mercado-pago"
         external_reference = f"agendamento__{salao_id}__{agendamento_ref.id}"
         
@@ -342,10 +370,11 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
         else:
             logging.warning("Device ID ausente no payload. Risco de fraude aumentado.")
 
-        ro_obj = RequestOptions(custom_headers=custom_headers) # Usa o custom_headers
+        ro_obj = RequestOptions(custom_headers=custom_headers)
 
         nome_completo = payload.customer_name.strip().split()
-        primeiro_nome = nome_completo[0]; ultimo_nome = nome_completo[-1] if len(nome_completo) > 1 else primeiro_nome
+        primeiro_nome = nome_completo[0]
+        ultimo_nome = nome_completo[-1] if len(nome_completo) > 1 else primeiro_nome
 
         additional_info = {
             "payer": {
@@ -363,243 +392,254 @@ async def create_appointment_with_payment(payload: AppointmentPaymentPayload):
         }
         statement_descriptor = salon_name[:10].upper().replace(" ", "")
         
-        # --- CASO 1: PAGAMENTO COM PIX ---
+        # --- CASO 7.A: PAGAMENTO COM PIX ---
         if payload.payment_method_id == 'pix':
             payment_data = {
-                "transaction_amount": payload.transaction_amount, "description": f"Sinal de agendamento: {service_name}",
+                "transaction_amount": payload.transaction_amount, "description": f"Sinal: {service_name}",
                 "payment_method_id": "pix",
                 "payer": { "email": payload.payer.email, "identification": payer_identification_data },
                 "external_reference": external_reference, "notification_url": notification_url, 
                 "additional_info": additional_info,
                 "statement_descriptor": statement_descriptor
             }
-            # Utiliza a instância .payment()
+            
             payment_response = mp_client_do_salao_payment.create(payment_data, request_options=ro_obj)
             
             if payment_response["status"] not in [200, 201]:
-                # Se a chamada ao MP falhar, deleta e levanta a exceção.
                 if agendamento_ref: agendamento_ref.delete()
-                raise Exception(f"Erro MP (PIX): {payment_response.get('response').get('message', 'Erro desconhecido')}")
+                raise Exception(f"Erro MP (PIX): {payment_response.get('response', {}).get('message', 'Erro desconhecido')}")
 
             payment_result = payment_response["response"]
             payment_status = payment_result.get("status")
 
-            # PIX: O PIX NUNCA VEM APROVADO, MAS PODE VIR 'PENDING'.
             if payment_status in ["pending", "in_process"]:
                 qr_code_data = payment_result.get("point_of_interaction", {}).get("transaction_data", {})
-                agendamento_ref.update({"mercadopagoPaymentId": payment_result.get("id")})
+                agendamento_ref.update({"mercadopagoPaymentId": str(payment_result.get("id"))})
                 
                 return {
-                    "status": "pending_pix", "message": "PIX gerado. Agendamento reservado e aguardando pagamento.",
+                    "status": "pending_pix",
+                    "message": "PIX gerado com sucesso.",
                     "payment_data": {
-                        "qr_code": qr_code_data.get("qr_code"), "qr_code_base64": qr_code_data.get("qr_code_base64"),
-                        "payment_id": payment_result.get("id"), "agendamento_id_ref": agendamento_ref.id 
+                        "qr_code": qr_code_data.get("qr_code"),
+                        "qr_code_base64": qr_code_data.get("qr_code_base64"),
+                        "payment_id": str(payment_result.get("id")),
+                        "agendamento_id_ref": agendamento_ref.id 
                     }
                 }
             else:
-                 # Se vier qualquer outro status (rejeitado), deleta.
-                logging.warning(f"PIX com status inesperado ({payment_status}). Deletando agendamento {agendamento_ref.id}.")
+                logging.warning(f"PIX com status inesperado ({payment_status}). Deletando.")
                 if agendamento_ref: agendamento_ref.delete()
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Falha ao gerar o PIX.")
 
 
-        # --- CASO 2: PAGAMENTO COM CARTÃO ---
+        # --- CASO 7.B: PAGAMENTO COM CARTÃO ---
         else:
             payment_data = {
-                "transaction_amount": payload.transaction_amount, "token": payload.token,
-                "description": f"Sinal de agendamento: {service_name}",
-                "installments": payload.installments, "payment_method_id": payload.payment_method_id,
+                "transaction_amount": payload.transaction_amount, 
+                "token": payload.token,
+                "description": f"Sinal: {service_name}",
+                "installments": payload.installments, 
+                "payment_method_id": payload.payment_method_id,
                 "issuer_id": payload.issuer_id,
                 "payer": { "email": payload.payer.email, "identification": payer_identification_data },
-                "external_reference": external_reference, "notification_url": notification_url,
+                "external_reference": external_reference, 
+                "notification_url": notification_url,
                 "additional_info": additional_info,
                 "statement_descriptor": statement_descriptor
             }
-            # Utiliza a instância .payment()
+            
             payment_response = mp_client_do_salao_payment.create(payment_data, request_options=ro_obj)
 
             if payment_response["status"] not in [200, 201]:
                 if agendamento_ref: agendamento_ref.delete()
-                error_msg = payment_response.get('response', {}).get('message', 'Erro desconhecido ao processar o cartão.')
+                error_msg = payment_response.get('response', {}).get('message', 'Erro desconhecido ao processar cartão.')
                 raise Exception(f"Erro MP (Cartão): {error_msg}")
 
-            payment_status = payment_response["response"].get("status")
+            payment_result = payment_response["response"]
+            payment_status = payment_result.get("status")
             
+            # SE APROVADO NA HORA (Comum em cartão)
             if payment_status == "approved":
-                agendamento_ref.update({"status": "confirmado", "mercadopagoPaymentId": payment_response["response"].get("id")})
+                agendamento_ref.update({
+                    "status": "confirmado", 
+                    "paymentStatus": "paid_signal",
+                    "mercadopagoPaymentId": str(payment_result.get("id"))
+                })
                 
-                # Dispara e-mails (apenas se for aprovado)
+                # Dispara e-mails e Sync Google imediatamente
                 try:
                     if salon_email_destino:
-                        email_service.send_confirmation_email_to_salon(salon_email=salon_email_destino, salon_name=salon_name, customer_name=payload.customer_name, client_phone=payload.customer_phone, service_name=service_name, start_time_iso=payload.start_time)
+                        email_service.send_confirmation_email_to_salon(salon_email_destino, salon_name, payload.customer_name, payload.customer_phone, service_name, payload.start_time)
                     if payload.customer_email:
-                        email_service.send_confirmation_email_to_customer(customer_email=payload.customer_email, customer_name=payload.customer_name, service_name=service_name, start_time_iso=payload.start_time, salon_name=salon_name, salao_id=salao_id)
+                        email_service.send_confirmation_email_to_customer(payload.customer_email, payload.customer_name, service_name, payload.start_time, salon_name, salao_id)
+                    
+                    # Google Calendar
+                    if salon_data.get("google_sync_enabled") and salon_data.get("google_refresh_token"):
+                        google_event_data = {
+                            "summary": f"{service_name} - {payload.customer_name}",
+                            "description": f"Agendamento (Sinal Pago).\nServiço: {service_name}\nSinal: R$ {sinal_valor_backend}",
+                            "start_time_iso": start_time_dt.isoformat(),
+                            "end_time_iso": end_time_dt.isoformat(),
+                        }
+                        google_event_id = calendar_service.create_google_event_with_oauth(
+                            refresh_token=salon_data.get("google_refresh_token"),
+                            event_data=google_event_data
+                        )
+                        if google_event_id:
+                            agendamento_ref.update({"googleEventId": google_event_id})
+
                 except Exception as e:
-                    logging.error(f"Sinal pago, mas falha ao enviar e-mail: {e}")
+                    logging.error(f"Sinal pago, mas falha ao processar integrações pós-pagamento: {e}")
                 
                 return {"status": "approved", "message": "Pagamento aprovado e agendamento confirmado!"}
             
             elif payment_status in ["in_process", "pending", "pending_review_manual"]:
-                logging.warning(f"Sinal (Cartão) PENDENTE ou EM REVISÃO ({payment_status}). Deletando agendamento {agendamento_ref.id}.")
-                
+                logging.warning(f"Sinal (Cartão) PENDENTE/EM ANÁLISE ({payment_status}). Deletando agendamento.")
                 if agendamento_ref: agendamento_ref.delete()
-
-                error_detail = payment_response["response"].get("status_detail", "Seu pagamento está em análise ou pendente. Por favor, tente novamente com outro método ou mais tarde.")
+                error_detail = payment_response["response"].get("status_detail", "Pagamento em análise. Tente outro método.")
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error_detail)
             
             else:
-                 # Rejeitado ou outro status não esperado
+                # Rejeitado
                 error_detail = payment_response["response"].get("status_detail", "Pagamento rejeitado.")
                 if agendamento_ref: agendamento_ref.delete()
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error_detail)
 
     except HTTPException as httpe: 
-        if agendamento_ref: agendamento_ref.delete()
+        if agendamento_ref: 
+            try: agendamento_ref.delete() 
+            except: pass
         raise httpe
     except Exception as e:
         logging.exception(f"Erro CRÍTICO ao criar agendamento com sinal: {e}")
         if agendamento_ref:
             try: agendamento_ref.delete()
-            except Exception: pass
+            except: pass
         raise HTTPException(status_code=500, detail=str(e))
     
 @router.post("/agendamentos", status_code=status.HTTP_201_CREATED)
 async def create_appointment(appointment: Appointment):
-    """
-    1. Checa/Cria o perfil do Cliente CRM.
-    2. Cria um novo agendamento, SALVA NO FIRESTORE (com cliente_id), envia e-mails e sincroniza Google Calendar.
-    """
-        
     salao_id = appointment.salao_id
     service_id = appointment.service_id
-    start_time_str = appointment.start_time
-    user_name = appointment.customer_name.strip()
-    user_phone = appointment.customer_phone
-    user_email = appointment.customer_email.strip()
     
-    logging.info(f"Cliente '{user_name}' ({user_email}) criando agendamento para {salao_id}")
-    
-    agendamento_ref = None # Inicializa para o bloco try/except
+    # Normalização do telefone para o CRM
+    phone_clean = normalize_phone(appointment.customer_phone)
     
     try:
-        # --- 0. Checagem de Cliente (CRM) ---
-        cliente_id = check_and_update_cliente_profile(salao_id, appointment)
-        logging.info(f"Agendamento associado ao cliente_id: {cliente_id or 'N/A'}")
-        
         # 1. Validações e Busca de Dados
         salon_data = get_hairdresser_data_from_db(salao_id) 
-        if not salon_data: raise HTTPException(status_code=404, detail="Salão não encontrado")
+        if not salon_data: raise HTTPException(404, "Salão não encontrado")
+        
         service_info = salon_data.get("servicos_data", {}).get(service_id)
-        if not service_info:
-            raise HTTPException(status_code=404, detail="Serviço não selecionado ou inválido.")
+        if not service_info: raise HTTPException(404, "Serviço não selecionado ou inválido.")
+
+        # 2. Snapshot dos Dados (CRUCIAL PARA FINANCEIRO/HISTÓRICO)
         duration = service_info.get('duracao_minutos')
         service_name = service_info.get('nome_servico')
+        # Garante que o preço seja salvo como float para cálculos futuros
+        service_price = float(service_info.get('preco', 0.0)) 
         salon_name = salon_data.get('nome_salao')
         salon_email_destino = salon_data.get('calendar_id') 
-        service_price = service_info.get('preco')
+
         if duration is None or service_name is None or not salon_email_destino:
-            raise HTTPException(status_code=500, detail="Dados do serviço ou e-mail de destino incompletos.")
+            raise HTTPException(status_code=500, detail="Dados do serviço ou configuração do salão incompletos.")
 
-        # 2. Validação do telefone
-        cleaned_phone = re.sub(r'\D', '', user_phone)
-        if not (10 <= len(cleaned_phone) <= 11):
-            raise HTTPException(status_code=400, detail="Formato de telefone inválido.")
-
-        # 3. Lógica de Agendamento
-        start_time_dt = datetime.fromisoformat(start_time_str)
+        # 3. Verificar Disponibilidade e Conflitos
+        start_dt = datetime.fromisoformat(appointment.start_time)
         
-        # --- 3.1: VERIFICAÇÃO DE HORÁRIO DISPONÍVEL ---
-        is_free = calendar_service.is_slot_available(
-            salao_id=salao_id, salon_data=salon_data,
-            new_start_dt=start_time_dt, duration_minutes=duration,
-            ignore_firestore_id=None, ignore_google_event_id=None
-        )
-        if not is_free:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Este horário não está mais disponível. Por favor, escolha outro.")
+        # Check de disponibilidade no banco e google (se ativo)
+        if not calendar_service.is_slot_available(salao_id, salon_data, start_dt, duration):
+            raise HTTPException(status_code=409, detail="Este horário não está mais disponível.")
+            
+        # Check de horário de almoço
+        if is_conflict_with_lunch(start_dt, duration, salon_data):
+            raise HTTPException(status_code=409, detail="Conflito com o horário de almoço.")
 
-        # -------------------------------------------------------------------------
-        # >>> INCLUSÃO DA VALIDAÇÃO DE ALMOÇO <<<
-        # -------------------------------------------------------------------------
-        if is_conflict_with_lunch(start_time_dt, duration, salon_data):
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="O horário de agendamento conflita com o horário de almoço do salão. Por favor, escolha outro slot.")
-        # -------------------------------------------------------------------------
+        # 4. CRM: Vincular ou Criar Cliente
+        # Essa função garante que o histórico vá para o lugar certo
+        cliente_id = check_and_update_cliente_profile(salao_id, appointment)
 
-        # 4. LÓGICA DE SALVAMENTO NO FIRESTORE
-        end_time_dt = start_time_dt + timedelta(minutes=duration)
+        # 5. Salvar Agendamento Completo no Firestore
+        end_dt = start_dt + timedelta(minutes=duration)
+        
         agendamento_data = {
             "salaoId": salao_id,
-            "serviceId": appointment.service_id,
+            "clienteId": cliente_id, # Vínculo CRM
+            "customerName": appointment.customer_name.strip(),
+            "customerPhone": phone_clean, # Salva limpo para busca fácil
+            "customerEmail": appointment.customer_email.strip(),
+            
+            # Snapshot Financeiro (Congela o preço no momento da venda)
+            "serviceId": service_id,
             "serviceName": service_name,
-            "salonName": salon_name,
-            "customerName": user_name,
-            "customerEmail": user_email, 
-            "customerPhone": user_phone,
-            "startTime": start_time_dt, 
-            "endTime": end_time_dt, 
-            "durationMinutes": duration, 
-            "servicePrice": service_price,
-            "status": "confirmado", 
+            "servicePrice": service_price, 
+            "durationMinutes": duration,
+            
+            # Dados de Agenda
+            "startTime": start_dt,
+            "endTime": end_dt,
+            "status": "confirmado",
             "createdAt": firestore.SERVER_TIMESTAMP,
-            "reminderSent": False,
-            "clienteId": cliente_id # Linka ao perfil CRM
+            "paymentStatus": "na_loja", # Pagamento será feito no local
+            "channel": "site" # Origem do agendamento
         }
-        agendamento_ref = db.collection('cabeleireiros').document(salao_id).collection('agendamentos').document()
-        agendamento_ref.set(agendamento_data)
-        logging.info(f"Agendamento salvo no Firestore com ID: {agendamento_ref.id}")
+        
+        # Cria o documento
+        ref = db.collection('cabeleireiros').document(salao_id).collection('agendamentos').document()
+        ref.set(agendamento_data)
+        logging.info(f"Agendamento criado com ID: {ref.id}")
 
-        # 5. DISPARO DO E-MAIL (SALÃO e CLIENTE)
-        # ... (código de disparo de e-mail) ...
+        # 6. Disparo de E-mails (Notificações)
         try:
+            # Notifica o Dono do Salão
             email_service.send_confirmation_email_to_salon(
-                salon_email=salon_email_destino, salon_name=salon_name, 
-                customer_name=user_name, client_phone=user_phone, 
-                service_name=service_name, start_time_iso=start_time_str
+                salon_email=salon_email_destino, 
+                salon_name=salon_name, 
+                customer_name=appointment.customer_name, 
+                client_phone=appointment.customer_phone, 
+                service_name=service_name, 
+                start_time_iso=appointment.start_time
             )
-            email_service.send_confirmation_email_to_customer(
-                customer_email=user_email, customer_name=user_name,
-                service_name=service_name, start_time_iso=start_time_str,
-                salon_name=salon_name, salao_id=salao_id # Passa o ID para o link "Agendar Novamente"
-            )
+            # Notifica o Cliente Final
+            if appointment.customer_email:
+                email_service.send_confirmation_email_to_customer(
+                    customer_email=appointment.customer_email, 
+                    customer_name=appointment.customer_name, 
+                    service_name=service_name, 
+                    start_time_iso=appointment.start_time, 
+                    salon_name=salon_name, 
+                    salao_id=salao_id
+                )
         except Exception as e:
-            logging.error(f"Erro CRÍTICO ao disparar e-mail: {e}")
+            logging.error(f"Erro ao enviar e-mails de confirmação: {e}")
+            # Não paramos o fluxo se o e-mail falhar, pois o agendamento já existe
 
-        # 6. LÓGICA DE ESCRITA HÍBRIDA (Google Calendar)
-        # ... (código de sincronização do Google Calendar) ...
-        google_event_data = {
-            "summary": f"{service_name} - {user_name}",
-            "description": f"Agendamento via Horalis.\nCliente: {user_name}\nTelefone: {user_phone}\nServiço: {service_name}",
-            "start_time_iso": start_time_dt.isoformat(),
-            "end_time_iso": end_time_dt.isoformat(),
-        }
+        # 7. Sincronização com Google Calendar
         if salon_data.get("google_sync_enabled") and salon_data.get("google_refresh_token"):
-            logging.info(f"Sincronização Google Ativa para {salao_id}. Tentando salvar no Google Calendar.")
             try:
+                google_event_data = {
+                    "summary": f"{service_name} - {appointment.customer_name}",
+                    "description": f"Agendamento via Horalis.\nTel: {appointment.customer_phone}\nServiço: {service_name}\nPreço: R$ {service_price}",
+                    "start_time_iso": start_dt.isoformat(),
+                    "end_time_iso": end_dt.isoformat(),
+                }
+                
                 google_event_id = calendar_service.create_google_event_with_oauth(
                     refresh_token=salon_data.get("google_refresh_token"),
                     event_data=google_event_data
                 )
+                
                 if google_event_id:
-                    logging.info(f"Agendamento salvo com sucesso no Google Calendar (ID: {google_event_id}).")
-                    agendamento_ref.update({"googleEventId": google_event_id})
-                else:
-                    logging.warning("Falha ao salvar no Google Calendar (OAuth) (função retornou None).")
+                    ref.update({"googleEventId": google_event_id})
+                    logging.info(f"Sincronizado com Google Calendar. ID: {google_event_id}")
+            
             except Exception as e:
-                logging.error(f"Erro inesperado ao tentar salvar no Google Calendar: {e}")
-        else:
-            logging.info(f"Sincronização Google desativada ou refresh_token ausente para {salao_id}. Pulando etapa de escrita no Google.")
+                logging.error(f"Falha na sincronização com Google Calendar: {e}")
 
-        # 7. Retorna a resposta ao cliente final
-        return {"message": f"Agendamento para '{service_name}' criado com sucesso!"}
+        return {"message": "Agendamento confirmado com sucesso!", "id": ref.id}
 
-    except HTTPException as httpe: 
-        # Garante que o agendamento temporário seja deletado se uma HTTPException for levantada
-        if agendamento_ref:
-             try: agendamento_ref.delete()
-             except Exception: pass
-        raise httpe
+    except HTTPException as he:
+        raise he
     except Exception as e:
-        logging.exception(f"Erro CRÍTICO ao criar agendamento (Híbrido):")
-        if agendamento_ref:
-            try: agendamento_ref.delete()
-            except Exception: pass
-        raise HTTPException(status_code=500, detail="Erro interno ao criar agendamento.")
+        logging.error(f"Erro crítico em create_appointment: {e}")
+        raise HTTPException(status_code=500, detail="Erro interno ao processar agendamento.")
