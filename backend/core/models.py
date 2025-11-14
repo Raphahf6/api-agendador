@@ -22,7 +22,7 @@ class DailySchedule(BaseModel):
     lunchStart: Optional[str] = Field(None, description="Início do almoço (HH:MM).")
     lunchEnd: Optional[str] = Field(None, description="Fim do almoço (HH:MM).")
 
-# --- NOVO MODELO: Profissional (Equipe) ---
+# --- NOVO MODELO: Profissional (Equipe)
 class Professional(BaseModel):
     id: Optional[str] = None
     nome: str
@@ -30,7 +30,7 @@ class Professional(BaseModel):
     foto_url: Optional[str] = None
     ativo: bool = True
     horario_trabalho: Optional[Dict[str, Any]] = None
-
+    
 class SalonPublicDetails(BaseModel):
     # --- Campos Core & Cores ---
     nome_salao: str
