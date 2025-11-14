@@ -144,50 +144,66 @@ def notify_professional_if_assigned(salao_id: str, professional_id: str, appoint
 # 🌟 ATUALIZADO: Agora busca a equipe junto com os serviços.
 @router.get("/saloes/{salao_id}/servicos", response_model=SalonPublicDetails)
 def get_salon_services_and_details(salao_id: str):
-    logging.info(f"Buscando detalhes/serviços/equipe para: {salao_id}")
+    logging.info(f"Buscando detalhes/serviços para: {salao_id}")
     salon_data = get_hairdresser_data_from_db(salao_id) 
     
-    if 'numero_whatsapp' in salon_data:
-        salon_data['telefone'] = salon_data.pop('numero_whatsapp')
     if not salon_data:
         raise HTTPException(status_code=404, detail="Salão não encontrado")
+
+    # 🌟 CORREÇÃO DE TELEFONE 🌟
+    # Prioriza 'telefone' (Painel/Personalização). 
+    # Se estiver vazio, usa 'numero_whatsapp' (Cadastro).
+    telefone_editado = salon_data.get('telefone')
+    whatsapp_original = salon_data.get('numero_whatsapp')
     
-    # Validação de Assinatura (Mantida)
+    # Define o telefone oficial para o microsite
+    salon_data['telefone'] = telefone_editado if telefone_editado else whatsapp_original
+
+    # --- Validação de Assinatura (Mantida) ---
     status_assinatura = salon_data.get("subscriptionStatus")
     trial_ends_at = salon_data.get("trialEndsAt")
+    
     is_active = False
-    if status_assinatura == "active": is_active = True
+    
+    if status_assinatura == "active":
+        is_active = True
     elif status_assinatura == "trialing":
         if trial_ends_at:
-            if isinstance(trial_ends_at, str): trial_ends_at = datetime.fromisoformat(trial_ends_at)
-            if trial_ends_at.tzinfo is None: trial_ends_at = trial_ends_at.replace(tzinfo=pytz.utc)
-            if trial_ends_at > datetime.now(pytz.utc): is_active = True
+            if isinstance(trial_ends_at, str):
+                trial_ends_at = datetime.fromisoformat(trial_ends_at)
+            
+            if trial_ends_at.tzinfo is None:
+                trial_ends_at = trial_ends_at.replace(tzinfo=pytz.utc)
+            
+            if trial_ends_at > datetime.now(pytz.utc):
+                is_active = True
 
     if not is_active:
         logging.warning(f"Acesso público bloqueado para salão {salao_id}. Status: {status_assinatura}")
-        raise HTTPException(status_code=403, detail="Este estabelecimento está temporariamente indisponível.")
+        raise HTTPException(
+            status_code=403, 
+            detail="Este estabelecimento está temporariamente indisponível."
+        )
     
-    # Carrega Serviços (Mantido)
+    # --- Formatação de Serviços (Mantida) ---
     services_list_formatted = []
     if salon_data.get("servicos_data"):
         for service_id, service_info in salon_data["servicos_data"].items():
             services_list_formatted.append(Service(id=service_id, **service_info)) 
     
-    # 🌟 NOVO: Carrega Profissionais (Equipe)
+    # 🌟 BUSCA EQUIPE (Mantida) 🌟
     profissionais_list = []
     try:
         pros_ref = db.collection('cabeleireiros').document(salao_id).collection('profissionais')
-        # Filtra apenas os que estão 'ativos' (se houver essa lógica)
         docs = pros_ref.stream() 
         for doc in docs:
             profissionais_list.append(Professional(id=doc.id, **doc.to_dict()))
     except Exception as e:
-        logging.error(f"Erro ao buscar equipe do salão {salao_id}: {e}")
-        # Não quebra a rota se falhar, apenas retorna lista vazia
+        logging.error(f"Erro ao buscar equipe: {e}")
     
     response_data = SalonPublicDetails(
         servicos=services_list_formatted,
-        profissionais=profissionais_list, # 🌟 Envia a equipe
+        profissionais=profissionais_list,
         **salon_data
     ) 
     
