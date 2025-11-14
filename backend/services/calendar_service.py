@@ -152,10 +152,14 @@ def find_available_slots(
     salon_data: dict, 
     service_duration_minutes: int, 
     date_str: str,
-    professional_id: Optional[str] = None # 🌟 NOVO PARÂMETRO
+    professional_id: Optional[str] = None # <--- Aceita o ID
 ) -> List[str]:
     """
-    Encontra horários disponíveis, filtrando por profissional se especificado.
+    Encontra horários disponíveis, respeitando:
+    1. Horário do Salão
+    2. Horário Específico do Profissional (Se houver e for selecionado)
+    3. Intervalo de Almoço (Do profissional ou do salão)
+    4. Agendamentos existentes
     """
     if db is None: return []
 
@@ -167,23 +171,74 @@ def find_available_slots(
         target_date_local = datetime.strptime(date_str, '%Y-%m-%d').date()
         day_of_week_name = WEEKDAY_MAP_DB.get(target_date_local.weekday())
         
-        # 2. Obter Configuração do Dia
-        daily_config = salon_data.get('horario_trabalho_detalhado', {}).get(day_of_week_name)
+        # 2. Obter Configuração Base do Salão
+        salon_daily = salon_data.get('horario_trabalho_detalhado', {}).get(day_of_week_name)
 
-        if not daily_config or not daily_config.get('isOpen'):
+        # Se o salão está fechado, ninguém atende
+        if not salon_daily or not salon_daily.get('isOpen'):
             return []
         
-        # 3. Definir Início e Fim do Expediente
-        start_hour_str = daily_config.get('openTime', '09:00')
-        end_hour_str = daily_config.get('closeTime', '18:00')
+        # Definições Iniciais (Base Salão)
+        start_hour_str = salon_daily.get('openTime', '09:00')
+        end_hour_str = salon_daily.get('closeTime', '18:00')
         
+        has_lunch = salon_daily.get('hasLunch', False)
+        lunch_start_str = salon_daily.get('lunchStart')
+        lunch_end_str = salon_daily.get('lunchEnd')
+
+        # 3. SOBRESCRITA PELO PROFISSIONAL (Lógica de Interseção)
+        if professional_id:
+            try:
+                # Busca configurações do profissional
+                pro_ref = db.collection('cabeleireiros').document(salao_id).collection('profissionais').document(professional_id)
+                pro_doc = pro_ref.get()
+                
+                if pro_doc.exists:
+                    pro_data = pro_doc.to_dict()
+                    # Verifica se o profissional tem configuração específica para este dia
+                    pro_daily = pro_data.get('horario_trabalho', {}).get(day_of_week_name)
+                    
+                    if pro_daily:
+                        # Se o profissional folga neste dia, não há horários
+                        if not pro_daily.get('isOpen', True):
+                            return []
+                        
+                        # Pega horários do profissional (ou usa o do salão se vazio)
+                        pro_start = pro_daily.get('openTime')
+                        pro_end = pro_daily.get('closeTime')
+                        
+                        # Lógica de Interseção (O "Mais Restritivo" ganha)
+                        # Início: O mais tarde entre Salão e Profissional
+                        if pro_start and pro_start > start_hour_str:
+                            start_hour_str = pro_start
+                        
+                        # Fim: O mais cedo entre Salão e Profissional
+                        if pro_end and pro_end < end_hour_str:
+                            end_hour_str = pro_end
+                            
+                        # Se após a interseção o início for depois do fim, dia inválido
+                        if start_hour_str >= end_hour_str:
+                            return []
+
+                        # Sobrescreve almoço se o profissional tiver o dele configurado
+                        if 'hasLunch' in pro_daily:
+                            has_lunch = pro_daily['hasLunch']
+                            if has_lunch:
+                                lunch_start_str = pro_daily.get('lunchStart', lunch_start_str)
+                                lunch_end_str = pro_daily.get('lunchEnd', lunch_end_str)
+
+            except Exception as e:
+                logging.error(f"Erro ao carregar agenda do profissional: {e}")
+                # Em caso de erro, segue com a agenda do salão (fallback)
+
+        # 4. Converte Strings Finais para Datetime
         start_work_time = datetime.strptime(start_hour_str, '%H:%M').time()
         end_work_time = datetime.strptime(end_hour_str, '%H:%M').time()
 
         day_start_dt = local_tz.localize(datetime.combine(target_date_local, start_work_time))
         day_end_dt = local_tz.localize(datetime.combine(target_date_local, end_work_time))
 
-        # 4. Ponto de Partida
+        # 5. Ponto de Partida da Busca
         now_local = datetime.now(local_tz)
         if target_date_local == now_local.date():
             minutes_to_next_interval = SLOT_INTERVAL_MINUTES - (now_local.minute % SLOT_INTERVAL_MINUTES)
@@ -194,7 +249,7 @@ def find_available_slots(
 
         if search_from >= day_end_dt: return []
 
-        # 5. COLETA DE HORÁRIOS OCUPADOS
+        # 6. COLETA DE HORÁRIOS OCUPADOS (FIRESTORE)
         busy_periods = [] 
         
         day_start_utc = day_start_dt.astimezone(pytz.utc)
@@ -202,19 +257,25 @@ def find_available_slots(
 
         agendamentos_ref = db.collection('cabeleireiros').document(salao_id).collection('agendamentos')
         
-        # Query Base: Intervalo de Tempo
+        # Query Base
         query = agendamentos_ref.where(filter=FieldFilter("startTime", ">=", day_start_utc))\
                                 .where(filter=FieldFilter("startTime", "<=", day_end_utc))
         
-        # 🌟 FILTRO DE PROFISSIONAL
-        # Se um profissional foi selecionado, filtramos apenas os agendamentos dele.
+        # 🌟 FILTRO DE PROFISSIONAL NO BANCO 🌟
         if professional_id:
+            # Se tem profissional, traz os agendamentos DELE
             query = query.where(filter=FieldFilter("professionalId", "==", professional_id))
+        else:
+            # Se NÃO tem profissional selecionado (ou é agendamento geral), 
+            # buscamos agendamentos que também não têm profissional ou bloqueiam a agenda geral.
+            # (Esta lógica pode variar dependendo da regra de negócio, aqui assumimos que sem profissional = olha tudo)
+            pass
         
         docs = query.stream()
 
         for doc in docs:
             data = doc.to_dict()
+            # Ignora cancelados
             if data.get('status') in ['cancelado', 'rejeitado', 'canceled', 'rejected']: continue
                 
             appt_start = data.get('startTime')
@@ -229,11 +290,11 @@ def find_available_slots(
                     'end': appt_end.astimezone(local_tz)
                 })
 
-        # 6. Almoço
-        if daily_config.get('hasLunch'):
+        # 7. Adiciona Almoço (Calculado acima)
+        if has_lunch and lunch_start_str and lunch_end_str:
             try:
-                l_start_time = datetime.strptime(daily_config.get('lunchStart'), '%H:%M').time()
-                l_end_time = datetime.strptime(daily_config.get('lunchEnd'), '%H:%M').time()
+                l_start_time = datetime.strptime(lunch_start_str, '%H:%M').time()
+                l_end_time = datetime.strptime(lunch_end_str, '%H:%M').time()
                 l_start_dt = local_tz.localize(datetime.combine(target_date_local, l_start_time))
                 l_end_dt = local_tz.localize(datetime.combine(target_date_local, l_end_time))
                 busy_periods.append({'start': l_start_dt, 'end': l_end_dt})
@@ -241,7 +302,7 @@ def find_available_slots(
 
         busy_periods.sort(key=lambda x: x['start'])
 
-        # 7. Calcular Vãos
+        # 8. Calcular Vãos (Loop Final)
         current_slot = search_from 
         while current_slot < day_end_dt:
             slot_end = current_slot + timedelta(minutes=service_duration_minutes)

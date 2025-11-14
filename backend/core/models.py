@@ -29,6 +29,7 @@ class Professional(BaseModel):
     cargo: str = "Profissional" # ex: Barbeiro, Manicure
     foto_url: Optional[str] = None
     ativo: bool = True
+    horario_trabalho: Optional[Dict[str, Any]] = None
 
 class SalonPublicDetails(BaseModel):
     # --- Campos Core & Cores ---
