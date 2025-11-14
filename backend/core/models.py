@@ -313,3 +313,10 @@ class PagamentoSettingsBody(BaseModel):
     sinal_valor: Optional[float] = 0.0
     
     
+class Professional(BaseModel):
+    id: Optional[str] = None
+    nome: str
+    cargo: str = "Profissional" # ex: Barbeiro, Manicure
+    foto_url: Optional[str] = None
+    ativo: bool = True
+    # Futuro: dias_trabalho, servicos_habilitados, etc.
