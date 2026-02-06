@@ -30,7 +30,7 @@ from core.auth import get_current_user
 from core.db import get_all_clients_from_db, get_hairdresser_data_from_db, db
 from services import email_service, calendar_service
 
-API_BASE_URL = "https://api-agendador.onrender.com/api/v1"
+API_BASE_URL = "https://api-agendador-2n55.onrender.com/api/v1"
 sdk = mercadopago.SDK("TEST_ACCESS_TOKEN")
 
 # --- Constantes ---
@@ -60,7 +60,7 @@ auth_router = APIRouter(
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET")
 SCOPES = ['https://www.googleapis.com/auth/calendar']
-RENDER_API_URL = "https://api-agendador.onrender.com/api/v1" 
+RENDER_API_URL = "https://api-agendador-2n55.onrender.com/api/v1" 
 GOOGLE_REDIRECT_URI = f"{RENDER_API_URL}/admin/google/auth/callback"
 
 # --- Constantes do Mercado Pago OAuth ---

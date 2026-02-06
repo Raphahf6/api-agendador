@@ -17,7 +17,7 @@ from services import calendar_service, email_service
 
 # --- Constantes ---
 CLIENTE_COLLECTION = 'clientes' 
-RENDER_API_URL = "https://api-agendador.onrender.com/api/v1"
+RENDER_API_URL = "https://api-agendador-2n55.onrender.com/api/v1"
 
 router = APIRouter(
     tags=["Cliente Final"] 
