@@ -28,6 +28,7 @@ class Professional(BaseModel):
     nome: str
     cargo: str = "Profissional" # ex: Barbeiro, Manicure
     foto_url: Optional[str] = None
+    comissao: Optional[float] = 0.0
     ativo: bool = True
     horario_trabalho: Optional[Dict[str, Any]] = None
     servicos: List[str] = []
